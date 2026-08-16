@@ -939,3 +939,26 @@ and a one-line note on the approach taken.
   iter that regenerates those tests. **Future note:**
   when that iter lands, the Cyrillic fragments must be
   replaced with English to satisfy the memory rule.
+
+- **`build-essential` — available, not required** — shipped.
+  Closed the sixth Dependencies sub-item.
+
+  `build-essential` is on the host: `/usr/bin/gcc` and
+  `/usr/bin/make` both resolve (the apt metapackage's
+  standard contents). However the project's packaging
+  path is **CGO-disabled** (`CGO_ENABLED=0` per TODO
+  §"Single-binary distribution"): ADR 0003 chose
+  `golang.org/x/sys/unix` over gvisor's TUN sub-package
+  precisely to keep CGO off the build path and the
+  binary statically-linkable. The row's phrasing —
+  "for CGO if the TUN library needs it" — is
+  conditional, and the project's TUN layer chose a
+  pure-Go path that does not. Verify:
+  `CGO_ENABLED=0 go env CGO_ENABLED` → `0`. Closing
+  the row as "platform-ready" rather than
+  "build-bound"; the metapackage stays installable for
+  any future operator who needs to compile eBPF
+  objects (clang is a separate row below).
+
+  Gate: pure host-tooling availability — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.
