@@ -21,7 +21,7 @@ A VPN tunnel that encapsulates IP packets inside gRPC streams.
 ┌─────────────────┐         gRPC/HTTP2          ┌─────────────────┐
 │  VPN Client     │ ◄─────────────────────────► │  VPN Server     │
 │  (TUN interface)│   encapsulated IP packets   │  (forwarding)   │
-└─────────────────┘                              └─────────────────┘
+└─────────────────┘                             └─────────────────┘
 ```
 
 For end-to-end behaviour, see the sequence diagrams:

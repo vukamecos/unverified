@@ -187,6 +187,7 @@ Single Go module `github.com/vukamecos/unverified`, single package root for the 
 - **PQC signatures:** ML-DSA-65 (FIPS 204) lives in stdlib as `crypto/mldsa` starting with Go 1.26.0; we use it directly. What stdlib does **not** yet provide is the *integration* of ML-DSA into `crypto/x509` and `crypto/tls` (cert chain validation, signature algorithm negotiation) — that is still tracked as a proposal at golang/go#78888. For the hybrid Ed25519 + ML-DSA-65 X.509 certificate format we therefore ship our own validator (see §7.2) rather than relying on `crypto/x509`; `circl` is **not** required for signatures as such, and we avoid it on the signature path to keep the dependency surface small.
 - **Config:** `github.com/pelletier/go-toml/v2`.
 - **CLI:** `github.com/urfave/cli/v3`.
+- **Test tooling:** `github.com/stretchr/testify` (`require` for fatal preconditions, `assert` for independent checks) as the standard assertion library; `github.com/matryer/moq` — mock generation for `internal/contract/*` interfaces (see §13.1: hand-written mocks are forbidden).
 - **Build:** `CGO_ENABLED=0`, `-trimpath`, `-ldflags '-s -w -extldflags "-static"'`.
 
 All third-party deps pinned in `go.mod`, verified in CI via `govulncheck` and `gosec`.
@@ -308,7 +309,7 @@ CLI: `unvfd fw {check,apply,diff,show,test}`.
 
 - **systemd unit** for both server and client; `Type=notify`, `NoNewPrivileges=true`, `ProtectSystem=strict`, hardened sandbox (`RestrictNamespaces`, `MemoryDenyWriteExecute`, `SystemCallFilter`).
 - **Process drops caps** after setup; the systemd unit grants only `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_BPF` (the mount of `bpffs` happens in a small helper before exec).
-- **Two distinct log channels** — see §11.1.
+- **Logs:** structured logging via stdlib `log/slog` (typed key-value records, no printf-style strings); two distinct channels — see §11.1.
 - **Metrics:** Prometheus endpoint at `/metrics`. **Bound to `127.0.0.1` by default** (or `::1` if IPv6 loopback is enabled); when scrape-from-LAN is required, the runtime listens on a **separate Unix socket or a dedicated loopback port with `mTLS`** (config flag `metrics.listen = "unix:///run/unvfd/metrics.sock" | "tcp://127.0.0.1:9100" | "tcp://0.0.0.0:9100"`). The `tcp://0.0.0.0` form requires an explicit opt-in plus a separate client-cert; the default is loopback only. Per-client counters live in BPF maps, read via the dedicated `cilium/ebpf` iterator, not via shared maps.
 - **Releases:** `.tar.gz` + `.deb` per arch, signed (Sigstore / minisign / GPG), with SBOM (SPDX).
 
@@ -366,7 +367,19 @@ The threat-model document does **not** list "compromised server" as a generic ad
 - Documentation: English only (`docs/`). PlantUML for sequence diagrams; rendered to PNG/SVG in CI.
 - `docs/private/` is personal scratchpad — never read, edited, or committed by automation.
 
-### 13.1 Static analysis & security toolchain
+### 13.1 Mandatory testing policy
+
+Tests are **not optional** in this repository. A change without tests is an unfinished change.
+
+- **Unit tests are mandatory** for every `internal/` package: every new exported behaviour ships with a `*_test.go` in the same PR. Table-driven tests are the default style. Assertions use `testify` (`github.com/stretchr/testify`): `require` for preconditions that must abort the test on failure, `assert` for independent checks — no hand-rolled `if got != want { t.Fatal(...) }` boilerplate.
+- **Coverage gate:** CI fails the PR if the package being changed drops below the agreed coverage floor, and if `go build ./...`, `go vet ./...`, or `go test ./...` are not green.
+- **Fuzz tests are mandatory** for every self-rolled parser, decoder, or verifier (see §7.2): the protocol frame codec, the firewall DSL parser, the TOML config loader, the inner-KEM handshake, and the hybrid-certificate validator. Native Go fuzzing only (`testing.F`, `go test -fuzz`), with a checked-in seed corpus including malformed/negative inputs.
+- **Crypto paths:** any code touching keys, nonces, or signatures additionally gets round-trip tests (encrypt→decrypt, sign→verify, KEM encaps→decaps) and negative tests (wrong key, corrupted tag, replayed seq must fail loudly).
+- **Regression tests:** every bug fix ships with a test that fails without the fix.
+- **No flaky tests in CI:** a test that fails intermittently is treated as a bug and is fixed or removed, never re-run until green.
+- **Mocks are generated, never hand-written.** Test doubles for `internal/contract/*` interfaces are produced by `moq` (`github.com/matryer/moq`) from the interface definition via `//go:generate` directives; the generated `*_mock.go` files are committed next to the interface's package. Hand-written or inline ad-hoc mocks are **forbidden**: a manual stub silently drifts from the interface and compiles green while testing the wrong contract. If an interface changes, the mock is regenerated (`go generate ./...`) in the same PR — never patched by hand. A CI lint step rejects any test file declaring a mock/fake/stub type without the generated-code marker.
+
+### 13.2 Static analysis & security toolchain
 
 The CI pipeline runs the same toolchain on every push to a PR and on every merge to `main`. A red build blocks merge. The pipeline is layered: a *fast* set runs on every PR (a few minutes, fail-fast on syntax/type/lint regressions); a *slow* set runs nightly on `main` and weekly across the dependency tree (fuzzers, full vuln DB, deep scans).
 
