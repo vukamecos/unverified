@@ -1287,3 +1287,69 @@ and a one-line note on the approach taken.
   `go test ./... -race -count=1 -shuffle=on` ✓
   (hostprobe: 1 PASS, 1 SKIP). Stable across
   `-count=3`.
+
+- **Scriptable capability probe (TODO row 11)** —
+  shipped. Closed the CAP_BPF/CAP_PERFMON/CAP_NET_ADMIN
+  verification row.
+
+  Production runtime already covers `CAP_NET_ADMIN`
+  via `internal/tunnel/tun/preflight_linux.go`'s
+  `defaultCapProbe` (iter 7), using
+  `unix.Capget(LINUX_CAPABILITY_VERSION_3, pid=0)` and
+  surfacing `ReasonCAPNetAdminMissing` /
+  `ReasonCapProbeFailed` typed errors. That probe is
+  embedded in the production daemon's startup
+  preflight — the right place for it.
+
+  Shipped this iter: a scriptable host-side
+  counterpart in `internal/hostprobe/`:
+
+  - `capsprobe_linux.go` — exposes
+    `CapsRequired` (canonical ordered slice of
+    `CAP_NET_ADMIN`, `CAP_BPF`, `CAP_PERFMON` per
+    ARCH §11) and `CapsEffective() (*CapsReport,
+    error)` that runs capget on the current process
+    and reports which of the three are in the
+    Effective set. Read-only — never modifies the
+    process's capability state. The `*CapsReport`
+    has typed `Missing()` / `PresentNames()`
+    methods that return the canonical Names in
+    lexicographic order for stable diagnostic
+    output.
+
+  - `capsprobe_other.go` — non-Linux stub
+    (`UnsupportedPlatformError`) so cross-compile
+    to darwin/windows stays green.
+
+  - `capsprobe_test.go` — three tests:
+    `TestCapsRequired_CanonicalOrder` pins the
+    slice order (the runtime indexes
+    `CapsReport.Present[i]` by `CapsRequired[i]`,
+    so reordering would silently mislabel
+    diagnostics);
+    `TestCapsEffective_RunsWithoutPanic` runs the
+    probe and asserts a non-nil report;
+    `TestCapsReport_MissingAndPresent` verifies
+    the two name sets are disjoint, cover every
+    required cap exactly once, and logs the
+    missing set so an operator running `go test`
+    sees the gap immediately.
+
+  **On this host:**
+  ```
+  caps not in Effective set:
+    CAP_BPF, CAP_NET_ADMIN, CAP_PERFMON
+    (load eBPF programs requires these;
+     see TODO row 11 + ARCH §11)
+  ```
+  Expected — the running user is `fedor`, no caps
+  inherited from the login session. When the daemon
+  is run as a systemd unit with
+  `CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+  CAP_BPF CAP_PERFMON` per ARCH §11, the same
+  probe will report all three present.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓,
+  `go test ./... -race -count=1 -shuffle=on` ✓
+  (hostprobe: 4 PASS, 1 SKIP). Stable across
+  `-count=3`.
