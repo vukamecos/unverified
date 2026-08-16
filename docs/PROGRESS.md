@@ -6,6 +6,29 @@ and a one-line note on the approach taken.
 
 ## 2026-08-16
 
+- **Client (Ubuntu/Debian) / Create TUN interface — `/dev/net/tun` + `CAP_NET_ADMIN` preflight** — shipped.
+  Typed `contracttun.Preflight` interface + `*contracttun.PreflightError`
+  with stable `Reason` strings callers can switch on without parsing
+  the message. Production impl
+  `internal/tunnel/tun/preflight_linux.go` does:
+  1. `os.Stat("/dev/net/tun")` — fail-closed with
+     `ReasonTUNDeviceMissing` if absent (catches "kernel module `tun`
+     not loaded").
+  2. brief `unix.Open O_RDWR` + immediate `unix.Close` — fail-closed
+     with `ReasonTUNDeviceNotReadWrite` if denied (catches a too-
+     restrictive container `DeviceAllow=`).
+  3. `unix.Capget` with `LINUX_CAPABILITY_VERSION_3`, pid 0 (self),
+     two-word `CapUserData`; check
+     `data[0].Effective & (1 << CAP_NET_ADMIN)` (bit 12). Fail-closed
+     with `ReasonCAPNetAdminMissing` or `ReasonCapProbeFailed` on
+     capget failure.
+  Ordering is deliberate: device first (most common container
+  failure), then caps. A device failure never silently becomes a
+  caps failure. 8 contract tests cover the typed-error shape, Reason
+  stability (the strings are part of the public contract), the
+  short-circuit ordering, and the constructor shape. Non-Linux stub
+  in `preflight_other.go` returns `ReasonUnsupportedPlatform`. Build
+  / vet / test -race all green.
 - **Client (Ubuntu/Debian) / Create TUN interface — pin dep + minimal package** — shipped.
   After writing the wrapper on top of gvisor's `pkg/tcpip/link/tun`, the
   open path turned out to be three syscalls (`unix.Open("/dev/net/tun",
