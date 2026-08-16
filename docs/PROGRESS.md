@@ -962,3 +962,30 @@ and a one-line note on the approach taken.
 
   Gate: pure host-tooling availability — `go build ./...`
   ✓, `go vet ./...` ✓, no code change.
+
+- **System capability: `/dev/net/tun` available,
+  kernel module `tun` loaded** — verified on host —
+  shipped. Closed the seventh Dependencies sub-item.
+
+  `/dev/net/tun` is a character device
+  (`crw-rw-rw- root root 10, 200`). `tun` is **built
+  into** the kernel (Ubuntu/Debian generic kernel
+  default; `cat /proc/modules | grep '^tun '` is
+  empty). Kernel is `7.0.0-28-generic`. The runtime
+  preflight (`contracttun.Preflight`,
+  `internal/tunnel/tun/preflight_linux.go`,
+  iter 7) opens the device with
+  `unix.Open("/dev/net/tun", O_RDWR, 0)` and returns
+  `ReasonTUNDeviceMissing` /
+  `ReasonTUNDeviceNotReadWrite` typed errors if the
+  open fails. The production `Open` path uses the
+  same syscall per ADR 0003, so a missing device at
+  runtime is fail-closed at startup.
+
+  This is a host-capability row — there is no
+  install action (the kernel builtin can never be
+  removed at runtime; it is part of the image).
+  Verified by `ls` + `/proc/modules` check above.
+
+  Gate: pure host-capability check — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.
