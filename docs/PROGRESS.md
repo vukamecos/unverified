@@ -7,6 +7,69 @@ and a one-line note on the approach taken.
 ## 2026-08-16
 
 - **Client (Ubuntu/Debian) / Read IP packets from TUN, hand off to
+  gRPC stream — abstract `Pump` contract** — shipped.
+  Closed sub-item 2 of the data-path parent item (ADR 0005 was
+  sub-item 1, this is sub-item 2).
+
+  `internal/contract/session/Pump.go` defines the abstract seam
+  between the per-session data path and the rest of the codebase.
+  Mirrors the shape of `internal/contract/route/link.go`:
+  - `Pump` interface (1 method, `Run(ctx, dev, tun) error`).
+    Doc-comment pins the contract: implementations MUST run both
+    directions concurrently, return nil on graceful shutdown,
+    return a non-nil error (wrapping a `*PumpError` or the
+    underlying error verbatim) on any other failure. MUST spawn
+    ≤ 2 goroutines. MUST NOT touch inner-AEAD or inner-KEM.
+  - `*PumpError` typed error with `Reason` / `Op` / `Cause` /
+    `Error()` / `Unwrap()`. The `Op` field carries the failing
+    operation in human-readable form ("pump: read tun", "pump:
+    send frame", "pump: recv frame", "pump: write tun") and is
+    NOT part of the contract — callers switch on `Reason`. Kept
+    for parity with `*LinkError` and `*PreflightError`; the
+    `Op` field is used in `Error()` output only.
+  - `IsPumpError(err)` / `PumpReason(err)` helpers.
+  - 5 stable `Reason*` constants:
+    `ReasonUnsupportedPlatform`,
+    `ReasonReadTUNFailed`,
+    `ReasonWriteTUNFailed`,
+    `ReasonSendFrameFailed`,
+    `ReasonRecvFrameFailed`.
+
+  **Why these 5 and not more:** the pump has exactly 4
+  operations (read tun, write tun, send frame, recv frame) and
+  each has one canonical failure reason. The interface docs
+  explicitly state that the pump does NOT differentiate by
+  Reason between `contracttun.ErrClosed`, `transport.ErrClosed`,
+  and `io.EOF` from `RecvFrame` — those all map to a graceful
+  `nil` return. So the Reason surface is closed under the
+  pump's actual failure modes; future reasons (e.g. a
+  `ReasonBackpressureTimeout` if gRPC flow control ever blocks
+  too long) are additions, not churn.
+
+  **Why `Op` is on the struct, not a wrapped prefix:** the Op
+  field exists so `Error()` can render the failing operation
+  in a log-friendly form ("pump: read tun: read_tun_failed: ...")
+  without each call site doing its own `fmt.Errorf` wrapping.
+  The pump impl will set `Op` to one of the four canonical
+  strings; the contract test pins those strings.
+
+  **Moq-generated mock** at `internal/contract/session/pump_mock.go`,
+  produced by `go generate ./internal/contract/session/` (per
+  ARCH §13.1). The `//go:generate` directive lives at the top
+  of `Pump.go` and uses `go run github.com/matryer/moq@latest`
+  so the generator version is pinned per-repo rather than
+  relying on `$PATH`.
+
+  **No concrete impl this iter.** Sub-item 3 (the actual
+  pump in `internal/tunnel/session/pump_linux.go`) is a future
+  iter — that work is the meaty part (errgroup wiring, two
+  goroutines, sync.Pool, tag dispatch). Deferring keeps this
+  iter scoped to the contract surface.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓, `go test ./...
+  -race -count=1 -shuffle=on` ✓.
+
+- **Client (Ubuntu/Debian) / Read IP packets from TUN, hand off to
   gRPC stream — choose the mechanism** — ADR 0005 accepted.
   Closes the first sub-item of the data-path parent item;
   resolves the goroutine shape, error taxonomy, and buffer
