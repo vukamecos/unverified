@@ -4,6 +4,38 @@ Append-only log of completed TODO items, newest first. Each entry records
 the item, the branch of docs/TODO.md it came from, the commit summary,
 and a one-line note on the approach taken.
 
+## 2026-08-16
+
+- **Client (Ubuntu/Debian) / Create TUN interface — pin dep + minimal package** — shipped.
+  After writing the wrapper on top of gvisor's `pkg/tcpip/link/tun`, the
+  open path turned out to be three syscalls (`unix.Open("/dev/net/tun",
+  O_RDWR, 0)` + `SYS_IOCTL(fd, TUNSETIFF, ifreq)` + `SetNonblock`),
+  wrapping a `struct ifreq`. Pulling gvisor in for one wrapper function
+  is wrong: it brings the netstack / buffer / waiter / stateify
+  transitive surface for zero benefit. Revised ADR 0003 accordingly —
+  the implementation now uses stdlib `syscall` + `golang.org/x/sys/unix`
+  (a foundational Go module the rest of the binary pulls in anyway for
+  netlink / nftables wrappers). `gvisor.dev/gvisor` is **not** in
+  `go.mod`; `go mod tidy` removed it after the gvisor import was
+  dropped. Three files added:
+  - `internal/contract/tun/tun.go` — abstract `Device` interface
+    (`Name`, `MTU`, `Read`, `Write`, `Close`) + sentinel `ErrClosed`.
+    Owns the contract; nothing about `/dev/net/tun` leaks out.
+  - `internal/tunnel/tun/tun_linux.go` — `//go:build linux`. Three
+    syscalls, an `*os.File` wrap with `atomic.Bool` for idempotent
+    Close, and an `SIOCGIFMTU` lookup via `unix.Ifreq.Uint32()`. The
+    resolved interface name is captured from the ifreq's `name[16]`
+    field after the ioctl runs.
+  - `internal/tunnel/tun/tun_other.go` — `//go:build !linux` stub that
+    returns a typed error from `Open` so cross-compile stays green.
+  - `internal/contract/tun/tun_test.go` — 7 contract-level tests
+    exercising Name/MTU/Read/Write/Close + the central
+    `ErrClosed`-after-Close property + Close idempotence + Close
+    error-surfacing semantics. Hand-rolled fake (interface is small
+    enough that moq would be more code, not less; the future moq rule
+    targets larger interfaces).
+  build/vet/test/-race all green.
+
 ## 2026-08-15
 
 - **Client (Ubuntu/Debian) / Create TUN interface — choose the library** — ADR 0003 accepted.
