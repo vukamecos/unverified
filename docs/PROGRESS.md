@@ -6,6 +6,60 @@ and a one-line note on the approach taken.
 
 ## 2026-08-16
 
+- **Client (Ubuntu/Debian) / Bring interface up — choose the mechanism** — ADR 0004 accepted.
+  Resolves to `os/exec` shell-out to the `ip` binary (iproute2). No
+  new Go dependency: `iproute2` is already a hard runtime dependency
+  per TODO §"Dependencies (Debian packages)" (`iproute2 (for the
+  ip command — TUN/TAP and routing)`), so shelling out reuses
+  required tooling rather than adding a parallel one. Rationale:
+  (1) ARCH §6 prefers stdlib / minimal third-party surface;
+  `os/exec` + `fmt` + `strings` + `net.ParseCIDR` does the whole
+  job. (2) No long-lived `NETLINK_ROUTE` socket in the daemon
+  process — each `ip` invocation is a short-lived child process
+  whose netlink socket closes when the child exits. (3) Every
+  link-state change is a discrete auditable child process visible
+  in `ps`/`journald`; the operator can replay the sequence from
+  the structured log alone. (4) Shell-metacharacter attack
+  surface is zero: we use `exec.Command(name, args...)` with
+  absolute argv, never `sh -c`. (5) CIDR strings are validated
+  with `net.ParseCIDR` before any exec call.
+  `github.com/vishvananda/netlink` (Apache-2.0, pure Go, no CGO,
+  actively maintained) was the alternative; rejected for two
+  operations, since the dependency surface would dwarf the
+  functionality.
+  The TODO parent item was split into 5 sub-items (mechanism,
+  contract interface, concrete impl, non-Linux stub, contract
+  tests); this iter closed the first. No code changes this iter;
+  build/vet/test still green. The contract interface will live in
+  `internal/contract/route/link.go`; concrete impl in
+  `internal/tunnel/route/link_linux.go` (`//go:build linux`); non-Linux
+  stub in `link_other.go` (mirrors the tun package's structure).
+
+- **Re-read of ARCH.md — rule application.** Per the user's
+  "apply new rules" directive mid-iter, I re-read ARCH.md and
+  noticed §13.1 was stricter than the prior iters (6 and 7) had
+  honoured: **"Mocks are generated, never hand-written."**
+  §13.1 explicitly forbids hand-rolled fakes for any contract
+  interface; `github.com/matryer/moq` + `github.com/stretchr/testify`
+  are the prescribed tooling (and the only third-party packages
+  explicitly named in §6 as approved for this purpose). The
+  prior iters shipped hand-rolled `fakeDevice` and `fakePreflight`
+  in `internal/contract/tun/tun_test.go` and
+  `internal/contract/tun/preflight_test.go` — those violate
+  §13.1. Per the loop rule "документы конфликтуют → ARCH.md
+  главнее", the correct call is to regenerate those tests with
+  `moq` + `testify` and rewrite in table-driven form. This is a
+  separate, scoped piece of work and is queued as a future TODO
+  entry — out of scope for the present iter (whose scope is
+  "first unchecked `[ ]`", i.e. the link-up ADR). The ADR 0004
+  text and the new TODO sub-item were already corrected to
+  reflect the §13.1 rule (no "small enough that moq is not worth
+  the boilerplate" carve-out — moq is always used). build/vet/test
+  still green at HEAD; `moq` binary is not yet installed in
+  `$GOPATH/bin` (only `engram` is present), so the next iter
+  needs `go install github.com/matryer/moq@latest` before the
+  `go generate` step.
+
 - **Client (Ubuntu/Debian) / Create TUN interface — contract-level unit test** — closed (no code shipped this iter).
   The fourth sub-item was effectively completed at iter 6:
   `internal/contract/tun/tun_test.go` ships 7 tests (`TestDeviceContract_Name`,
