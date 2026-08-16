@@ -6,7 +6,7 @@ Target platform: **Ubuntu / Debian (Linux)**.
 
 ## Dependencies (Debian packages)
 
-- [ ] `golang-go` (or install Go from the upstream tarball — **≥ 1.26**, latest stable as of 2026-08; ships `crypto/mlkem`, `crypto/hkdf`, `crypto/sha3`, `crypto/pbkdf2` and enables the `X25519MLKEM768` hybrid in `crypto/tls` by default)
+- [x] `golang-go` (or install Go from the upstream tarball — **≥ 1.26**, latest stable as of 2026-08; ships `crypto/mlkem`, `crypto/hkdf`, `crypto/sha3`, `crypto/pbkdf2` and enables the `X25519MLKEM768` hybrid in `crypto/tls` by default). Verified on this host: `go version go1.26.3 linux/amd64`. The `crypto/mlkem`, `crypto/hkdf`, `crypto/sha3` and `crypto/tls` hybrid X25519+MLKEM768 surfaces compile-clean against this toolchain.
 - [ ] `protobuf-compiler` (`protoc`)
 - [ ] Go gRPC plugins: either install via `go install google.golang.org/protobuf/cmd/protoc-gen-go google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`, or install the Debian package `protoc-gen-go-grpc` (bookworm+).
 - [ ] `iproute2` (for the `ip` command — TUN/TAP and routing)

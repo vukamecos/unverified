@@ -813,3 +813,24 @@ and a one-line note on the approach taken.
   Gate: `go build ./...` ✓, `go vet ./...` ✓, `go test
   ./... -race -count=1 -shuffle=on` ✓ (ADR-only change;
   no production code touched).
+
+- **`golang-go` toolchain (≥ 1.26) — verified on host** —
+  shipped. Closed the first Dependencies sub-item.
+
+  `go version` reports `go1.26.3 linux/amd64` on this
+  host. The stdlib surfaces the item pins
+  (`crypto/mlkem`, `crypto/hkdf`, `crypto/sha3`,
+  `crypto/pbkdf2`, `crypto/tls` hybrid
+  X25519+MLKEM768) all compile cleanly against the
+  toolchain; the build and vet gates pass without
+  overrides. Other Dependencies items
+  (`protobuf-compiler`, `protoc-gen-go`, `iproute2`,
+  `nftables`, `build-essential`, `/dev/net/tun`,
+  kernel/btf, `libbpf-dev`/`clang`/`llvm`,
+  CAP_BPF/CAP_PERFMON/CAP_NET_ADMIN,
+  QUIC buffer tuning, PQC stdlib notes) are
+  separate rows in the section and will be checked
+  individually.
+
+  Gate: pure toolchain verification — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.
