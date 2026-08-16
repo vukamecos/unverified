@@ -6,6 +6,91 @@ and a one-line note on the approach taken.
 
 ## 2026-08-16
 
+- **Client (Ubuntu/Debian) / Bring interface up — moq-generated
+  contract tests for the `Link` interface** — shipped.
+  Closed the last open sub-item of the "Bring interface up" group.
+  Per ARCH §13.1 ("mocks are generated, never hand-written"), the
+  mock for the `contractroute.Link` interface is produced by
+  `github.com/matryer/moq` and committed next to the contract
+  package, not hand-rolled in test code.
+
+  **Setup:**
+  - `go install github.com/matryer/moq@latest` — pulled v0.7.1 into
+    `$GOPATH/bin/moq` (only `engram` was present before). The
+    install step is one-time for the dev box; future contributors
+    need it too (documented in package doc of `link.go`).
+  - Added `//go:generate go run github.com/matryer/moq@latest
+    -out link_mock.go . Link` to `internal/contract/route/link.go`.
+    Using `go run ...@latest` keeps the generator version pinned
+    per-repo rather than relying on `$PATH` at generate time.
+  - Ran `go generate ./internal/contract/route/` → produced
+    `link_mock.go` (`LinkMock` with `UpFunc` / `DownFunc` /
+    `AddAddressFunc` fields, `UpCalls` / `DownCalls` /
+    `AddAddressCalls` recorders, per-method `sync.RWMutex`). The
+    "DO NOT EDIT" header and the `var _ Link = &LinkMock{}`
+    compile-time check are preserved verbatim from the moq output.
+  - Updated the package doc on `link.go` to explain the
+    mock-generation convention (regenerate with `go generate ./...`,
+    don't edit by hand; the package doc carries the rationale so
+    future readers see it without grepping for the directive).
+
+  **Tests in `link_mock_test.go` (package `route_test`):**
+  7 tests, table-driven where applicable, `testify/require` for
+  preconditions and `testify/assert` for independent checks.
+  - `TestLinkMock_ImplementsLink` — compile-time interface
+    satisfaction; redundant with the mock's own `var _ Link`
+    assertion but listed in the test binary so a future migration
+    that drops the mock-side assertion fails the test gate.
+  - `TestLinkContract_UpIdempotent` /
+    `TestLinkContract_DownIdempotent` — three calls each return
+    nil; all three are recorded in `*Calls()`. The point is to
+    pin that an idempotent Link does NOT swallow calls silently;
+    audit logs / metrics must see every state-change attempt.
+  - `TestLinkContract_AddAddress_IdempotentSameCIDR` — first call
+    records, second call with the same CIDR is a no-op at the
+    mock level; both calls are recorded in `AddAddressCalls()`.
+  - `TestLinkContract_AddAddress_DifferentCIDR_TypedError` —
+    conflicting CIDR returns a `*LinkError`; `IsLinkError` /
+    `LinkReason` surface it without parsing the message.
+  - `TestLinkContract_AddAddress_DifferentCIDR_WrappedUnwrap` —
+    the typed error survives `errors.Join`-style wrapping
+    (`fmt.Errorf("%w", err)` would also work; `errors.Join`
+    matches the multi-error convention now standard in the
+    Go stdlib for sibling errors and is the preferred wrap
+    primitive in this codebase). Both `IsLinkError` and
+    `LinkReason` walk the chain via `errors.As`.
+  - `TestLinkContract_AllReasons_RoundTrip` — every Reason
+    constant round-trips through a wrap chain unchanged.
+    Inverse of `TestLinkReason_Stability` (which pins the
+    strings); this pins the *helpers*.
+  - `TestLinkContract_CallRecordingConcurrency` — 16 goroutines
+    × 64 calls each on the same mock; all 1024 calls recorded.
+    Pins the moq-generated mock's race-freedom (the per-method
+    `sync.RWMutex`); a future moq release that drops the locks
+    fails the `-race` gate.
+
+  **Why the production impl's tests stay hand-rolled:** the
+  `Executor` interface used to inject `ip`-binary fakes in
+  `internal/tunnel/route/link_linux_test.go` lives in
+  `internal/tunnel/route/`, NOT in `internal/contract/route/`,
+  so the §13.1 "mocks for contract interfaces are generated"
+  rule does not apply. Documented this distinction in the test
+  file's package comment so the next reader does not have to
+  re-derive it.
+
+  **Retroactive §13.1 cleanup still queued:** iter 6's
+  `internal/contract/tun/tun_test.go` and iter 7's
+  `internal/contract/tun/preflight_test.go` both use hand-rolled
+  fakes (`fakeDevice`, `fakePreflight`) for *contract* interfaces
+  and therefore still violate §13.1. Both are 5-method interfaces
+  where the hand-rolled fake is genuinely shorter than moq's
+  output, but the ARCH rule is absolute ("no carve-out for
+  small interfaces" — see the iter-9 PROGRESS entry). Two
+  follow-up iters needed; out of scope here.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓, `go test ./...
+  -race -count=1 -shuffle=on` ✓.
+
 - **Client (Ubuntu/Debian) / Bring interface up — concrete `ip`-backed
   `Link` + non-Linux stub** — shipped.
   `internal/tunnel/route/link_linux.go` (`//go:build linux`)

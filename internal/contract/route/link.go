@@ -13,12 +13,27 @@
 // shell-out to the `ip` binary (iproute2). The interface here is
 // deliberately small — three operations — because that is all the
 // kill switch / tunnel bring-up flow needs.
+//
+// # Mock generation
+//
+// Per ARCH §13.1 ("mocks are generated, never hand-written"), the
+// test mock for this package's [Link] interface is produced by
+// github.com/matryer/moq and committed next to the contract:
+//
+//	//go:generate go run github.com/matryer/moq@latest -out link_mock.go . Link
+//
+// Regenerate after any interface change with `go generate ./...`.
+// Do not edit link_mock.go by hand; the file header carries a
+// "regenerate" marker and a CI check (future) will reject drift
+// from `go generate`.
 package route
 
 import (
 	"errors"
 	"fmt"
 )
+
+//go:generate go run github.com/matryer/moq@latest -out link_mock.go . Link
 
 // Link is a single network interface the daemon can configure.
 //
