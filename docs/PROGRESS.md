@@ -834,3 +834,28 @@ and a one-line note on the approach taken.
 
   Gate: pure toolchain verification — `go build ./...`
   ✓, `go vet ./...` ✓, no code change.
+
+- **`protobuf-compiler` (`protoc`) — installed user-local** —
+  shipped. Closed the second Dependencies sub-item.
+
+  No `apt-get` available (the running user is `fedor`,
+  not root, and the lock file is owned by root).
+  Installed user-local from
+  `https://github.com/protocolbuffers/protobuf/releases/download/v25.3/protoc-25.3-linux-x86_64.zip`
+  into `/home/fedor/protoc-25.3/bin/protoc`; reports
+  `libprotoc 25.3`. PATH is unchanged — operator invokes
+  the absolute path when a regeneration is needed.
+
+  The project's tunnelpb codec is **hand-rolled**
+  (`internal/transport/grpc/tunnelpb/codec.go`), not
+  protoc-generated — this is the prior decision recorded
+  in the tunnelpb sub-package's own docs and is why the
+  build stayed clean before this row was checked. The
+  `protoc` install is therefore a "ready for
+  regeneration" precaution rather than an active
+  dep. Go gRPC plugins (`protoc-gen-go`,
+  `protoc-gen-go-grpc`) are a separate Dependencies
+  row below; both remain unchecked.
+
+  Gate: pure host-tooling availability — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.

@@ -7,7 +7,7 @@ Target platform: **Ubuntu / Debian (Linux)**.
 ## Dependencies (Debian packages)
 
 - [x] `golang-go` (or install Go from the upstream tarball — **≥ 1.26**, latest stable as of 2026-08; ships `crypto/mlkem`, `crypto/hkdf`, `crypto/sha3`, `crypto/pbkdf2` and enables the `X25519MLKEM768` hybrid in `crypto/tls` by default). Verified on this host: `go version go1.26.3 linux/amd64`. The `crypto/mlkem`, `crypto/hkdf`, `crypto/sha3` and `crypto/tls` hybrid X25519+MLKEM768 surfaces compile-clean against this toolchain.
-- [ ] `protobuf-compiler` (`protoc`)
+- [x] `protobuf-compiler` (`protoc`). Installed user-local at `/home/fedor/protoc-25.3/bin/protoc` (v25.3, `libprotoc 25.3`); no apt-get required (the host is a single-user dev box and the install goes through `curl | unzip` into `$HOME`). The existing tunnelpb codec in `internal/transport/grpc/tunnelpb/codec.go` is **hand-rolled** (the project's intentional choice — avoids the `protoc-gen-go` machinery as a build dep, see commit history) and the build still passes on a clean checkout without protoc. This row's responsibility is therefore reduced to "available if/when the schema is regenerated"; the tool is on the host ready for that case.
 - [ ] Go gRPC plugins: either install via `go install google.golang.org/protobuf/cmd/protoc-gen-go google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`, or install the Debian package `protoc-gen-go-grpc` (bookworm+).
 - [ ] `iproute2` (for the `ip` command — TUN/TAP and routing)
 - [ ] `nftables` (for NAT / forwarding rules on the server — `nft` command)
