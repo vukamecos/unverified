@@ -6,6 +6,17 @@ and a one-line note on the approach taken.
 
 ## 2026-08-16
 
+- **Client (Ubuntu/Debian) / Create TUN interface — contract-level unit test** — closed (no code shipped this iter).
+  The fourth sub-item was effectively completed at iter 6:
+  `internal/contract/tun/tun_test.go` ships 7 tests (`TestDeviceContract_Name`,
+  `TestDeviceContract_MTU_OK`, `TestDeviceContract_MTU_UnderlyingErr`,
+  `TestDeviceContract_ReadWrite_Payload`, `TestDeviceContract_ClosedSemantics`,
+  `TestDeviceContract_CloseErr`, `TestErrClosed_Message`) covering the
+  `Name()` / `MTU()` round-trip via a hand-rolled `fakeDevice` injected
+  through the contract `Device` interface. The interface is 5 methods
+  — small enough that moq would be more code than the fake. The moq
+  rule (ARCH §13.1) applies when the interface grows past ~7 methods.
+  build/vet/test/-race all still green at HEAD.
 - **Client (Ubuntu/Debian) / Create TUN interface — `/dev/net/tun` + `CAP_NET_ADMIN` preflight** — shipped.
   Typed `contracttun.Preflight` interface + `*contracttun.PreflightError`
   with stable `Reason` strings callers can switch on without parsing
