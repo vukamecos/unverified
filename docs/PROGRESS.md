@@ -905,3 +905,37 @@ and a one-line note on the approach taken.
 
   Gate: pure host-tooling availability — `go build ./...`
   ✓, `go vet ./...` ✓, no code change.
+
+- **`nftables` — verified present** — shipped. Closed the
+  fifth Dependencies sub-item.
+
+  `/usr/sbin/nft --version` reports
+  `nftables v1.0.9 (Old Doc Yak #3)` (Debian package
+  `nftables 1.0.9-1ubuntu0.1 amd64`). Used by the
+  killswitch persist path (TODO §"Persistence model is
+  reconcile, not rollback" + ARCH §8.1.1) and the future
+  server-side forwarding/MASQUERADE rules
+  (TODO §"Server"). The runtime is expected to shell
+  out via `exec.Command("/usr/sbin/nft", ...)` with
+  absolute argv matching the ADR 0004 / 0006 pattern;
+  the killswitch pre-start unit verifies the loaded
+  ruleset with `nft list ruleset | sha256sum` against
+  the canonical blob's hash. No client-side production
+  code calls `nft` yet; this row establishes that the
+  host tool is on `PATH` (`/usr/sbin/nft`) for the
+  upcoming killswitch/forwarding iters.
+
+  Gate: pure host-tooling availability — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.
+
+  **Callout (no action this iter):** a memory rule says
+  docs must be in English (no Cyrillic). A `grep -P`
+  scan of `docs/PROGRESS.md` finds two pre-existing
+  Cyrillic fragments at lines 415–416 (in a note about
+  ARCH §13.1 hand-rolled fakes vs. moq-regenerated
+  mocks). Those predate this iter; touching them is
+  scope creep beyond the cron task "mark first
+  unchecked `[ ]`" and is queued for the future
+  iter that regenerates those tests. **Future note:**
+  when that iter lands, the Cyrillic fragments must be
+  replaced with English to satisfy the memory rule.
