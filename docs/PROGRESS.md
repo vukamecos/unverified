@@ -552,3 +552,66 @@ and a one-line note on the approach taken.
   Approach chosen because `protoc` is not installed in the dev env and
   ARCH §6 prefers stdlib / no third-party codegen — the `.proto` remains
   the source of truth, the codec is hand-mirrored and documented as such.
+
+- **Client (Ubuntu/Debian) / Read IP packets from TUN, hand off to
+  gRPC stream — concrete pump impl + non-Linux stub** —
+  shipped. Closed sub-items 3 and 4 of the data-path parent
+  item together (the 4-line stub has no design of its own).
+
+  Two files in `internal/tunnel/session/`:
+
+  - `pump_linux.go` (`//go:build linux`): `*Pump` type
+    implementing `contractsession.Pump`. `Run(ctx, dev, tun)`
+    validates inputs, reads `dev.MTU()` for pool sizing, then
+    `errgroup.WithContext(ctx)` spawns `pumpUp` (TUN→wire) and
+    `pumpDown` (wire→TUN). Per-Pump `sync.Pool` of MTU+32-byte
+    slices (the +32 is belt-and-braces for TUN drivers that
+    ignore `IFF_NO_PI`; `getBuf` resizes if the pool returns a
+    smaller slice). Tag dispatch on the high nibble of the
+    first IP byte: `0x4*` → `tag=0x04` (IPv4), `0x6*` →
+    `tag=0x06` (IPv6), anything else fails closed with a
+    `*PumpError{Reason: ReasonSendFrameFailed}`. Error
+    taxonomy per ADR 0005: `contracttun.ErrClosed`,
+    `transport.ErrClosed`, `io.EOF`, and `context.Canceled` /
+    `context.DeadlineExceeded` from either direction → graceful
+    `nil`; any other error → wrap as `*PumpError` with the
+    stable Reason (`ReasonReadTUNFailed` /
+    `ReasonWriteTUNFailed` / `ReasonSendFrameFailed` /
+    `ReasonRecvFrameFailed`). Compile-time checks:
+    `var _ contractsession.Pump = (*Pump)(nil)` and a
+    `var _ = io.EOF` guard so we notice if anyone reshapes
+    the natural terminator.
+
+  - `pump_other.go` (`//go:build !linux`): `*Pump` whose
+    `Run` always returns `*PumpError{Reason:
+    ReasonUnsupportedPlatform}`. Same compile-time interface
+    check. Keeps cross-compile green; ARCH §5 promises the
+    pump is Linux-only.
+
+  `golang.org/x/sync` moves from transitive to direct in
+  `go.mod` (pulled in by `errgroup` — ADR 0005 calls it the
+  one new runtime dep).
+
+  **Why combine sub-items 3 + 4:** the non-Linux stub is a
+  4-line `Run` returning one typed error — no design
+  decisions, nothing worth its own iter per the "split, do
+  one" rule.
+
+  **Why no tests in this iter:** the contract-test sub-item
+  (sub-item 5) and the integration-test sub-item (sub-item 6)
+  are the right homes. The pump itself is exercised by the
+  contract tests (mocked Device + Tunnel → exercise every
+  branch of the error taxonomy) and the integration test
+  (off-platform loopback). Writing throwaway-once tests
+  against the concrete impl would duplicate what the
+  contract tests cover. Gate: `go build ./...` ✓,
+  `go vet ./...` ✓, `go test ./... -race -count=1
+  -shuffle=on` ✓ (the concrete impl is not exercised by
+  tests on this iteration; `internal/tunnel/session` shows
+  `no test files` by design).
+
+  **Why `Op` lives on the struct, not on the wrap site:**
+  the field exists so `Error()` can render the failing
+  operation in a single log-friendly form; each call site
+  does `Op: "read tun"` once, the helper composes the rest.
+  Callers never switch on `Op`.
