@@ -885,3 +885,23 @@ and a one-line note on the approach taken.
 
   Gate: pure host-tooling availability — `go build ./...`
   ✓, `go vet ./...` ✓, no code change.
+
+- **`iproute2` — verified present** — shipped. Closed the
+  fourth Dependencies sub-item.
+
+  `/sbin/ip -V` reports `iproute2-6.1.0, libbpf 1.3.0`
+  (`dpkg -l iproute2`: `6.1.0-1ubuntu6.4 amd64`,
+  networking and traffic control tools). Above the
+  ADR 0004 / ADR 0006 floor of `iproute2 ≥ 5.10`. Both
+  ADRs use the binary via absolute argv
+  (`exec.Command("/sbin/ip", ...)`); the package's
+  ip-backed implementations (`link_linux.go` and the
+  upcoming `route_linux.go` per iter 18's ADR 0006) do
+  not look at iproute2's output unless a future item
+  needs the JSON-schema (`ip -j ...`), and pinning the
+  ≥ 5.10 version range in
+  `debian/control: Depends: iproute2 (>= 5.10.0-3)` is
+  already documented in the ADRs.
+
+  Gate: pure host-tooling availability — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.
