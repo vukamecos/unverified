@@ -6,6 +6,25 @@ and a one-line note on the approach taken.
 
 ## 2026-08-15
 
+- **Client (Ubuntu/Debian) / Create TUN interface — choose the library** — ADR 0003 accepted.
+  Resolves to `gvisor.dev/gvisor/pkg/tcpip/link/tun`. Rationale, in
+  priority order: (1) `sing-tun` is GPL-3.0-or-later, which would
+  propagate to the whole static binary — unacceptable for a
+  re-distributable single-binary daemon; `gvisor` is Apache-2.0 /
+  BSD-3 / MIT. (2) `sing-tun` pulls in six extra Go modules
+  (sagernet gvisor, netlink, nftables, sing, mdlayher netlink, go-nfqueue)
+  for one capability; gvisor's TUN sub-package adds only gvisor's own
+  internal packages. (3) Linux-only is fine — ARCH §1 is Linux-only.
+  (4) `tun.Device` exposes the primitives we actually need (raw fd +
+  ioctl + Read/Write/MTU); sing-tun's broader API (packet batching,
+  ICMP-error forwarding, traceroute) is upstream feature work that
+  does not belong in our data path. (5) No CGO. (6) gvisor was
+  released 2026-08-15, actively maintained. The TODO parent item was
+  split into four sub-items (library choice, dependency pin + minimal
+  package, capability probe, interface-based unit test); this iter
+  closed the first. No code changes; build/vet/test/-race still green.
+- **Protocol / Document handshake / authentication flow** — committed.
+
 - **Protocol / Document handshake / authentication flow** — committed.
   Added `docs/handshake.md`, the single source of truth for the order
   of operations that brings a client and server from TCP open to a

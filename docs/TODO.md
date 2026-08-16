@@ -31,7 +31,11 @@ Target platform: **Ubuntu / Debian (Linux)**.
 
 > End-to-end flow: [`docs/diagrams/client-sequence.puml`](diagrams/client-sequence.puml).
 
-- [ ] Create TUN interface via `/dev/net/tun`. Default choice: `gvisor.dev/gvisor/pkg/tcpip/link/tun` (already used by gVisor, broadly tested) or `github.com/xtls/sing-tun` (actively maintained, used by Xray/sing-box). `songgao/water` is **unmaintained** since 2020-03 and is not used here; the listing above is kept only as a historical reference and the only candidates in the design are gvisor and sing-tun.
+- [ ] Create TUN interface via `/dev/net/tun`. Default choice: `gvisor.dev/gvisor/pkg/tcpip/link/tun` (already used by gVisor, broadly tested) or `github.com/sagernet/sing-tun` (actively maintained, used by Xray/sing-box). `songgao/water` is **unmaintained** since 2020-03 and is not used here; the listing above is kept only as a historical reference and the only candidates in the design are gvisor and sing-tun. Sub-items, do one at a time:
+  - [x] Choose the library (gvisor vs sing-tun) — see [docs/decisions/0003-tun-library.md](decisions/0003-tun-library.md). Resolves to gvisor: Linux-only, permissive license (Apache-2.0 / BSD-3 / MIT), no CGO, no transitive dependency tree beyond gvisor's own packages, exposes the raw fd + ioctl we need and nothing we do not.
+  - [ ] Add the `gvisor.dev/gvisor` dependency to `go.mod` (pinned) and a minimal `internal/tunnel/tun` package with the interface (`Open(name string) (*Device, error)`, `Read() ([]byte, error)`, `Write([]byte) (int, error)`, `Close() error`, `Name() string`, `MTU() (uint32, error)`) backed by `tun.Device`. Use `//go:build linux` so the package does not compile on other GOOS values.
+  - [ ] Verify `/dev/net/tun` availability on startup (open O_RDWR; refuse with a clear error otherwise) and that the process holds `CAP_NET_ADMIN` (per ARCH §11 / TODO §"Run with CAP_NET_ADMIN").
+  - [ ] Unit test for the `Name()` / `MTU()` round-trip via a fake `tun.Device` injected through a small `internal/contract/tun` interface (interface in contract/, concrete impl in `internal/tunnel/tun`) — keeps tests off-platform per the ARCH §13.1 mock rule.
 - [ ] Bring interface up with `ip link set ... up` and assign address
 - [ ] Read IP packets from TUN, hand off to gRPC stream
 - [ ] Configure routing (`ip route add ... dev tun0`)
