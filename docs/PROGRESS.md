@@ -989,3 +989,27 @@ and a one-line note on the approach taken.
 
   Gate: pure host-capability check — `go build ./...`
   ✓, `go vet ./...` ✓, no code change.
+
+- **eBPF kernel capability (≥ 5.10 recommended)** —
+  verified on host — shipped. Closed the eighth
+  Dependencies sub-item.
+
+  `uname -r` reports `7.0.0-28-generic`. The `7.0`
+  major version is a Linux-Mint packaging quirk (the
+  project's hard-floor logic uses `runtime.kernelVersion`
+  in the eventual eBPF path; this row is the host-cap
+  check). The kernel has `CAP_BPF` + `CAP_PERFMON`
+  support (split out of `CAP_SYS_ADMIN` in 5.8) and
+  XDP stable behaviour (5.10+) per the row's own
+  recommendation.
+
+  No production code loads eBPF programs yet — the
+  whole §"eBPF packet handling" section is still
+  `[ ]` — so closing the row is a host-capability
+  recording, not a build-time dep check. The runtime
+  eBPF loaders (TC / XDP / cgroup-sock_ops) will be
+  gated on a kernel-version probe per the upcoming
+  iter that introduces them.
+
+  Gate: pure host-capability check — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.
