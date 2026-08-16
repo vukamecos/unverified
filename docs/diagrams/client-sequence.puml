@@ -1,0 +1,193 @@
+@startuml unvfd-client-sequence
+
+' ============================================================
+' VPN tunnel over gRPC — client sequence diagram
+' Shows the client lifecycle from launch to graceful shutdown.
+' ============================================================
+
+title VPN tunnel — client sequence
+
+' --- Participants ---
+actor "User / systemd"           as User
+participant "unvfd client"       as Client
+participant "Config loader"      as Config
+participant "eBPF loader"        as Ebpf
+participant "nftables"           as Nft
+participant "TUN device"         as Tun
+participant "Kernel network\nstack" as Kernel
+participant "DNS config\n(/etc/resolv.conf)" as Dns
+participant "VPN server"         as Server
+participant "PQC / TLS layer"    as Pqc
+participant "Journal / logs"     as Logs
+
+' ============================================================
+' 1. Launch and pre-flight checks
+' ============================================================
+User -> Client : unvfd client --config /etc/unvfd/client.toml
+activate Client
+
+Client -> Config : load config
+Config --> Client : cfg (server addr, certs, kill-switch, transport)
+
+Client -> Client : self-test\n(check capabilities, kernel, /dev/net/tun, BTF)
+note right of Client
+  Checks:
+  - CAP_NET_ADMIN, CAP_BPF
+  - kernel >= 5.10, BTF available
+  - /dev/net/tun exists
+  - nftables / ip commands in PATH
+end note
+
+alt self-test fails
+  Client --> User : exit 1 (refuse to start)
+else self-test OK
+  ' ============================================================
+  ' 2. Kill switch BEFORE any network activity
+  ' ============================================================
+  Client -> Nft : install kill-switch rules\n(block all egress, allow server IP)
+  activate Nft
+  Nft --> Client : OK
+  deactivate Nft
+  note right of Client
+    Traffic is blocked BEFORE
+    the TUN comes up — no leaks.
+  end note
+
+  ' ============================================================
+  ' 3. eBPF fast-path: TC egress drop
+  ' ============================================================
+  Client -> Ebpf : load pinned BPF programs\n(TC egress drop, XDP drop on iface)
+  Ebpf --> Client : OK (programs attached)
+  activate Ebpf
+  Client -> Ebpf : update allow-list map\n(server IP:port, loopback)
+  Ebpf --> Client : OK
+
+  ' ============================================================
+  ' 4. TUN interface and routing
+  ' ============================================================
+  Client -> Tun : open /dev/net/tun, create tun0
+  Tun --> Client : fd
+  Client -> Tun : ip link set tun0 up
+  Client -> Tun : ip addr add 10.10.0.2/24 dev tun0
+  Tun --> Client : OK
+
+  Client -> Kernel : ip route add <server-ip>/32 via <physical-gw>\n(exception: gRPC traffic bypasses the tunnel)
+  Kernel --> Client : OK
+  Client -> Tun : ip route add default dev tun0
+  Tun --> Client : OK
+  note right of Client
+    The /32 host route to the server
+    must exist BEFORE the default route
+    via tun0 — otherwise gRPC traffic
+    loops back into the tunnel.
+  end note
+
+  Client -> Dns : replace /etc/resolv.conf\n(or systemd-resolved stub)
+  Dns --> Client : OK
+
+  ' ============================================================
+  ' 5. Transport handshake: TCP/QUIC + TLS 1.3 with PQC
+  ' ============================================================
+  Client -> Server : TCP SYN (h2 mode)\nor QUIC Initial (h3 mode)
+  activate Server
+  Server --> Client : SYN-ACK (h2)\nor QUIC handshake packets (h3)
+
+  Client -> Pqc : hybrid KEM start\n(X25519 + ML-KEM-768)
+  activate Pqc
+  Client -> Server : TLS 1.3 ClientHello\n(ALPN: h2 | h3, PQC KEM share)
+  Server -> Pqc    : (server-side hybrid KEM)
+  Pqc --> Client   : shared secret
+  Pqc --> Server   : shared secret (implicit)
+  deactivate Pqc
+
+  Server --> Client : server Certificate
+  Client -> Client : verify cert pin (SPKI hash)
+  Client -> Server : client Certificate\n(after CertificateRequest)
+  Server --> Client : mTLS OK
+
+  Client -> Server : open gRPC bidi stream\n("Tunnel" RPC)
+  activate Server
+
+  ' ============================================================
+  ' 6. Inner app-layer KEM (double encryption)
+  ' ============================================================
+  Client -> Server : inner KEM handshake\n(X25519 + ML-KEM-768, ephemeral)
+  Server --> Client : inner shared secret
+
+  note over Client, Server
+    Now there are TWO layers of encryption:
+    1. TLS (transport)
+    2. App-layer AEAD (inner)
+  end note
+
+  ' ============================================================
+  ' 7-10. Steady state: main loop + parallel background activities
+  ' ============================================================
+  par main loop: TUN <-> gRPC stream
+    loop while the connection is alive
+      ' Outbound: app packet -> tunnel
+      Kernel -> Tun : IP packet (from browser / curl / etc.)
+      Tun -> Client : read(fd)
+
+      Client -> Client : encrypt + AEAD seal\n(seq++, AAD, nonce)
+
+      Client -> Server : gRPC stream send\n(encrypted IP packet)
+
+      ' Inbound: reply from server
+      Server -> Client : gRPC stream recv\n(encrypted IP packet)
+      Client -> Client : decrypt + AEAD open
+      Client -> Client : replay-window check\n(drop if replayed)
+      Client -> Tun : write(fd)
+
+      Tun -> Kernel : IP packet (exits TUN into apps)
+    end
+  else periodic rekey (PFS)
+    Client -> Server : rekey request\n(new ephemeral X25519 + ML-KEM)
+    Server --> Client : rekey ack (new shared secret)
+    Client -> Client : HKDF -> new AEAD key\n(smooth handoff)
+  else heartbeat / self-test
+    Client -> Ebpf : heartbeat: verify TC program still attached
+    Ebpf --> Client : OK
+    Client -> Nft   : heartbeat: verify kill-switch rules present
+    Nft --> Client  : OK
+    note right of Client
+      If someone modified the rules
+      from outside — treat it as
+      tamper detection.
+    end note
+  else in-flight reconnect
+    alt gRPC stream broken
+      Client -> Client : mark session dirty\n(traffic queued or dropped,\nkill switch stays active)
+      Client -> Server : reconnect (new TLS + inner KEM)
+      Client -> Logs : log reconnect
+    end
+  end
+
+  ' ============================================================
+  ' 11. Graceful shutdown (SIGINT / SIGTERM)
+  ' ============================================================
+  User -> Client : SIGTERM
+  Client -> Server : close gRPC stream (graceful)
+  deactivate Server
+  Client -> Tun : ip link set tun0 down
+  Client -> Tun : ip route del default dev tun0
+  Tun --> Client : OK
+
+  Client -> Dns : restore /etc/resolv.conf
+  Dns --> Client : OK
+
+  Client -> Ebpf : detach + unload BPF programs
+  Ebpf --> Client : OK
+  deactivate Ebpf
+
+  Client -> Nft : remove kill-switch rules
+  Nft --> Client : OK
+
+  Client -> Logs : final audit log entry
+  Logs --> Client : OK
+  deactivate Client
+
+  Client --> User : exit 0
+end
+
+@enduml

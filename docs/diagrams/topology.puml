@@ -1,0 +1,67 @@
+@startuml unvfd-topology
+
+' ============================================================
+' VPN tunnel over gRPC — high-level topology
+'
+' Two endpoint nodes (client / server) and the components they
+' own, plus the upstream network beyond the server. Use this as
+' the "box-and-line" view; the per-step behaviour lives in the
+' client-sequence and server-sequence diagrams.
+'
+' NOTE: this diagram is intentionally rendered with pure
+' PlantUML shapes (rectangle / cloud) and manual positioning.
+' It does NOT use `package { component ... }` nesting or
+' arrows-as-layout, so it renders without a Graphviz `dot`
+' binary — useful for readthedocs / GitHub preview environments
+' that don't ship Graphviz.
+' ============================================================
+
+title VPN tunnel — high-level topology
+
+skinparam shadowing false
+skinparam defaultTextAlignment left
+skinparam rectangle {
+    RoundCorner 0
+}
+
+' --- Client endpoint ---
+rectangle "unvfd client" as ClientBox #F0F4F8 {
+    rectangle "TUN\n(tun0, 10.10.0.2)"       as TUN
+    rectangle "eBPF TC egress drop"          as EbpfDrop
+    rectangle "nftables kill switch"         as KillSwitch
+    rectangle "Inner KEM + AEAD"             as InnerC
+    rectangle "TLS 1.3 (mTLS, PQC)"          as TlsC
+
+    TUN      -[#999999]- EbpfDrop
+    EbpfDrop -[#999999]- KillSwitch
+    KillSwitch -[#999999]- InnerC
+    InnerC   -[#999999]- TlsC
+}
+
+' --- Server endpoint ---
+rectangle "unvfd server" as ServerBox #F0F4F8 {
+    rectangle "Listener\n(TCP + UDP)"        as Listener
+    rectangle "eBPF XDP on <iface>"          as Xdp
+    rectangle "nftables forwarding +\nMASQUERADE" as NftSrv
+    rectangle "Inner KEM + AEAD"             as InnerS
+    rectangle "IPAM\n(10.10.0.0/24 pool)"    as Ipam
+    rectangle "CRL / OCSP"                   as Crl
+    rectangle "HTTP endpoints\n(/ip, /healthz, /crl.pem)" as Http
+
+    Listener -[#999999]- InnerS
+    InnerS   -[#999999]- NftSrv
+    Listener -[#999999]- Xdp
+    NftSrv   -[#999999]- Ipam
+    NftSrv   -[#999999]- Crl
+    NftSrv   -[#999999]- Http
+}
+
+' --- Far side of the server ---
+cloud "upstream network" as Upstream
+
+' --- Inter-endpoint data flow ---
+TlsC     ..> Listener : "gRPC/h2 over TCP\ngRPC-over-QUIC (custom)\nencrypted IP packets"
+NftSrv   ..> Upstream : "forwarded packets"
+Upstream ..> NftSrv   : "return traffic"
+
+@enduml

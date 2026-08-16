@@ -3,3 +3,4 @@ bin/
 vendor/
 *.log
 *.out
+.mcp.json

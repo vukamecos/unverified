@@ -1,0 +1,242 @@
+@startuml unvfd-server-sequence
+
+' ============================================================
+' VPN tunnel over gRPC — server sequence diagram
+' Shows the server lifecycle from launch to graceful shutdown,
+' including per-client session handling.
+' ============================================================
+
+title VPN tunnel — server sequence
+
+' --- Participants ---
+actor "Operator / systemd"   as Op
+participant "unvfd server"   as Srv
+participant "Config loader"  as Cfg
+participant "nftables"       as Nft
+participant "eBPF loader"    as Ebpf
+participant "Listener\n(TCP + UDP)" as Lst
+participant "TLS / mTLS\n(PQC KEM)" as Tls
+participant "gRPC server"    as Grpc
+participant "Session\nmanager" as Sess
+participant "IPAM\n(pools)"  as Ipam
+participant "Inner KEM\n(AEAD)" as Inner
+participant "TUN / upstream\nforwarding" as Fwd
+participant "Kernel\nnetwork stack" as Kern
+participant "CRL / OCSP"     as Crl
+participant "Journal /\naudit log" as Logs
+participant "VPN client"     as Cli
+
+' ============================================================
+' 1. Launch and pre-flight checks
+' ============================================================
+Op -> Srv : unvfd server --config /etc/unvfd/server.toml
+activate Srv
+
+Srv -> Cfg : load config
+Cfg --> Srv : cfg (listen addr, certs, IP pool,\nfirewall, transport modes)
+
+Srv -> Srv : self-test\n(capabilities, kernel, BTF, nftables)
+note right of Srv
+  Checks:
+  - CAP_NET_ADMIN, CAP_BPF
+  - kernel >= 5.10, BTF available
+  - /dev/net/tun (only if doing TUN-side routing)
+  - nftables / ip in PATH
+  - TLS cert chain loadable
+  - CRL fresh
+end note
+
+alt self-test fails
+  Srv --> Op : exit 1 (refuse to start)
+else self-test OK
+  ' ============================================================
+  ' 2. Firewall (nftables) — forwarding + MASQUERADE
+  ' ============================================================
+  Srv -> Nft : install base forwarding rules\n(MASQUERADE on egress, forward chain)
+  activate Nft
+  Nft --> Srv : OK
+  Srv -> Kern : enable ip_forward\n(sysctl net.ipv4.ip_forward=1,\nnet.ipv6.conf.all.forwarding=1)
+  Kern --> Srv : OK
+
+  ' ============================================================
+  ' 3. eBPF fast-path on public interface
+  ' ============================================================
+  Srv -> Ebpf : load XDP program on <iface>\n(rate-limit unknown src IPs,\ndrop blacklisted)
+  Ebpf --> Srv : OK (programs attached)
+  activate Ebpf
+  Srv -> Ebpf : seed deny-list map\n(blacklisted source IPs)
+  Ebpf --> Srv : OK
+
+  ' ============================================================
+  ' 4. Bind listener (TCP + UDP)
+  ' ============================================================
+  Srv -> Lst : bind <listen-addr>:<port>\n(TCP for h2, UDP for h3/QUIC)
+  activate Lst
+  Lst --> Srv : OK
+  note right of Lst
+    ALPN negotiation picks:
+    - h2 -> gRPC over TCP
+    - h3 -> gRPC-over-QUIC (custom transport)
+    cmux-style split serves
+    HTTP endpoints (/ip, /healthz)
+    alongside gRPC.
+  end note
+
+  Srv -> Logs : emit "server ready" audit event
+  Logs --> Srv : OK
+
+  ' ============================================================
+  ' 5. Steady state: serve clients
+  ' ============================================================
+  note over Lst, Grpc
+    Each accepted connection is handled
+    in its own goroutine — per-client
+    parallel processing.
+  end note
+
+  loop while listener is open
+    ' --- 5a. Transport handshake ---
+    Cli -> Lst : TCP SYN (h2)\nor QUIC Initial (h3, TLS runs inside QUIC)
+    Lst -> Tls : TLS 1.3 handshake\n(ALPN: h2 | h3)
+    activate Tls
+    Tls -> Tls : hybrid KEM\n(X25519 + ML-KEM-768, stdlib)
+    Tls --> Cli : CertificateRequest
+    Tls --> Cli : server Certificate\n(SPKI pinned on client)
+    Cli --> Tls : client Certificate
+    Tls -> Crl : check client cert\n(revocation + EKU)
+    Crl --> Tls : OK / revoked
+    Tls --> Lst : mTLS OK
+    deactivate Tls
+
+    alt cert revoked or wrong EKU
+      Lst --> Cli : TLS fatal alert\n(bad_certificate / certificate_revoked)
+      Lst -> Logs : log auth failure
+    else mTLS OK
+      ' --- 5b. gRPC stream opened ---
+      Cli -> Grpc : open "Tunnel" bidi stream
+      activate Grpc
+
+      Grpc -> Sess : onConnect(clientID, peerCert)
+      activate Sess
+      Sess -> Ipam : lease IP for client\n(10.10.0.0/24 pool)
+      Ipam --> Sess : 10.10.0.N + DNS servers
+      Sess -> Sess : spawn per-client goroutine
+      Sess --> Grpc : session ready
+
+      ' --- 5c. Inner app-layer KEM (double encryption) ---
+      Cli -> Inner : inner KEM handshake\n(X25519 + ML-KEM-768, ephemeral)
+      activate Inner
+      Inner --> Cli : inner shared secret
+      note over Cli, Inner
+        Two layers of encryption:
+        1. TLS (transport)
+        2. App-layer AEAD (inner)
+        Rekey every 2^28 packets or 1h.
+      end note
+
+      ' --- 5d. Steady state: per-client packet pump ---
+      par packet pump: gRPC stream <-> upstream forwarding
+        loop while the session is alive
+          ' Inbound: client -> upstream
+          Cli -> Grpc : gRPC stream recv\n(encrypted IP packet)
+          Grpc -> Inner : AEAD open\n(replay-window check)
+          Inner --> Grpc : plaintext IP packet
+          Grpc -> Fwd : forward packet to upstream\n(via LAN / WAN iface)
+          Fwd -> Kern : IP packet (egress)
+          Kern --> Fwd : reply from upstream
+          Fwd -> Grpc : reply IP packet
+          Grpc -> Inner : AEAD seal\n(seq++, AAD, nonce)
+          Grpc -> Cli : gRPC stream send\n(encrypted reply)
+        end
+      else periodic rekey (PFS)
+        Cli -> Inner : rekey request\n(new ephemeral X25519 + ML-KEM)
+        Inner --> Cli : rekey ack
+        Inner -> Inner : HKDF -> new AEAD key\n(smooth handoff)
+        note right of Inner
+          Either side may trigger rekey;
+          client-initiated flow is shown
+          to match the client diagram.
+        end note
+      else per-client telemetry
+        Sess -> Ebpf : read per-client counters\n(bytes in/out, packets)
+        Ebpf --> Sess : counters
+        Sess -> Logs : emit periodic metrics
+      else tamper / anomaly detection
+        Sess -> Ebpf : heartbeat: verify XDP program attached
+        Ebpf --> Sess : OK
+        Sess -> Nft : heartbeat: verify forwarding rules present
+        Nft --> Sess : OK
+        note right of Sess
+          Modified rules under us
+          -> treat as compromise,
+          drop the session and
+          quarantine the client cert.
+        end note
+      else client disconnects or stream broken
+        Sess -> Logs : log disconnect reason
+        Sess -> Ipam : release IP
+        Ipam --> Sess : OK
+        deactivate Sess
+        deactivate Grpc
+        deactivate Inner
+      end
+    end
+  end
+
+  ' ============================================================
+  ' 6. Out-of-band: HTTP endpoints on the same listener
+  ' ============================================================
+  note over Lst
+    HTTP endpoints are served on the SAME
+    TLS listener (no plaintext fallback,
+    h2c is NOT used): ALPN picks
+    http/1.1 or h2, then content-type
+    sniffing (cmux-style split) separates
+    gRPC from plain HTTP.
+  end note
+
+  group HTTP endpoints (parallel with gRPC)
+    Op -> Lst : GET /ip
+    Lst -> Lst : honour X-Forwarded-For\nonly if trusted-proxy flag set
+    Lst --> Op : "Your IP: 1.2.3.4"\nor {"ip":"1.2.3.4"}
+    Op -> Lst : GET /healthz
+    Lst --> Op : 200 OK
+    Op -> Lst : GET /crl.pem
+    Lst --> Op : current CRL (PEM)
+  end
+
+  ' ============================================================
+  ' 7. Graceful shutdown (SIGINT / SIGTERM)
+  ' ============================================================
+  Op -> Srv : SIGTERM
+  Srv -> Logs : emit "shutdown begin" audit event
+
+  Srv -> Lst : stop accepting new connections
+  Lst --> Srv : OK
+
+  Srv -> Sess : broadcast "drain" to all sessions\n(stop new packets, flush in-flight)
+  Sess --> Srv : all sessions drained
+
+  loop for each active session
+    Sess -> Cli : close gRPC stream (graceful)
+    Sess -> Ipam : release IP
+    Ipam --> Sess : OK
+  end
+
+  Srv -> Ebpf : detach + unload BPF programs
+  Ebpf --> Srv : OK
+  deactivate Ebpf
+
+  Srv -> Nft : remove forwarding + MASQUERADE rules
+  Nft --> Srv : OK
+  deactivate Nft
+
+  Srv -> Logs : final audit log entry
+  Logs --> Srv : OK
+  deactivate Lst
+  deactivate Srv
+
+  Srv --> Op : exit 0
+end
+
+@enduml
