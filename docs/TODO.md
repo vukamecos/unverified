@@ -23,7 +23,7 @@ Target platform: **Ubuntu / Debian (Linux)**.
 ## Protocol
 
 - [x] Define the `.proto` schema for tunnel messages (packet framing, control channel)
-- [ ] Decide on packet encoding (raw IPv4/IPv6 vs. TLV)
+- [x] Decide on packet encoding (raw IPv4/IPv6 vs. TLV) — see [docs/decisions/0001-packet-encoding.md](decisions/0001-packet-encoding.md). Raw IPv4/IPv6 framing (tag byte + 2-byte length + packet). No TLV.
 - [ ] Decide on stream multiplexing (one stream per session vs. per connection)
 - [ ] Document handshake / authentication flow
 

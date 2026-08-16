@@ -6,6 +6,13 @@ and a one-line note on the approach taken.
 
 ## 2026-08-15
 
+- **Protocol / Decide on packet encoding** — ADR 0001 accepted.
+  Raw IPv4/IPv6 framing (single tag byte `0x04`/`0x06`, 2-byte BE length,
+  packet bytes verbatim) — already implemented in the codec shipped in
+  iter 1. TLV explicitly rejected: extra parser, no flexibility we use,
+  per-packet overhead, no protocol-agility benefit we couldn't get with
+  one more tag byte. No code changes; `go build`, `go vet`,
+  `go test -race` green.
 - **Protocol / Define the `.proto` schema for tunnel messages** — committed.
   Added `proto/tunnel.proto` (5 control records: Hello/Session/Keepalive/Rekey/Close;
   raw IPv4/IPv6 packet framing) and a hand-rolled `internal/transport/grpc/tunnelpb/codec.go`
