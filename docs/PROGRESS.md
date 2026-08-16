@@ -6,6 +6,93 @@ and a one-line note on the approach taken.
 
 ## 2026-08-16
 
+- **Client (Ubuntu/Debian) / Bring interface up — concrete `ip`-backed
+  `Link` + non-Linux stub** — shipped.
+  `internal/tunnel/route/link_linux.go` (`//go:build linux`)
+  wraps iproute2 behind the `contractroute.Link` interface using
+  stdlib `os/exec` with absolute argv (never `sh -c`). Two
+  sub-items were filed in this iter; both `[x]`:
+  1. **Concrete `Link` impl** — `Options{ IPPath, Executor }`
+     with `WithIPPath` / `WithExecutor` builders (the zero value
+     is the production default: `/sbin/ip` + real `os/exec`).
+     `Executor` is a one-method interface injected into
+     `linuxLink`; tests stub it, production uses an unexported
+     `execCommandRunner` that captures combined stdout+stderr so
+     the idempotency probe can inspect RTNETLINK messages.
+     Methods:
+     - `Up()` / `Down()` — kernel-idempotent, one exec call
+       each; map any non-zero exit to `ReasonLinkUpFailed` /
+       `ReasonLinkDownFailed` with the underlying error wrapped
+       via `LinkError.Cause`.
+     - `AddAddress(cidr)` — three-stage idempotency:
+       (a) in-memory cache match → no-op;
+       (b) in-memory cache mismatch → `ReasonAddressAlreadyAssigned`
+           without exec (cheap, certain);
+       (c) cache empty + clean exec → cache the CIDR;
+       (d) cache empty + exec failure → distinguish "File exists"
+           (kernel idempotency / conflict signal) from any other
+           error: only the former triggers the probe `ip -o addr
+           show dev NAME`; any other failure surfaces as
+           `ReasonAddressAddFailed` WITHOUT a probe (avoids
+           spending an exec call on a permission / No-such-device
+           error that won't be cured by reading the address list).
+       The probe branches on the literal substring in
+       `stderr`: same CIDR on the device → idempotent success;
+       different CIDR → `ReasonAddressAlreadyAssigned`.
+  2. **Non-Linux stub** — `internal/tunnel/route/link_other.go`
+     (`//go:build !linux`) returns `ReasonUnsupportedPlatform`
+     from `New` (mirrors `tun/tun_other.go`'s shape).
+
+  Tests in `link_linux_test.go` (`package route_test`):
+  - 12 top-level tests, ~20 sub-cases, all table-driven per
+    §13.1, `testify/require` for preconditions, `testify/assert`
+    for independent checks.
+  - `fakeExecutor` records every call and serves a FIFO of
+    pre-programmed `{stdout, err}` responses. The `Executor`
+    interface lives in `internal/tunnel/route/`, not
+    `internal/contract/`, so the §13.1 moq-only rule for
+    *contract* mocks does not apply; the fake is justified in a
+    package doc comment.
+  - `fakeExitError` mirrors the real `*exec.ExitError` shape so
+    that the production substring check `strings.Contains(runErr.Error(), "File exists")`
+    sees the same content it would in production.
+  - Coverage: `TestNew_EmptyName` / `TestNew_DefaultsApplied` /
+    `TestUp_HappyPath` / `TestUp_ExecFailure` /
+    `TestDown_HappyPath` / `TestDown_ExecFailure` /
+    `TestAddAddress_HappyPath` /
+    `TestAddAddress_IdempotentSameCIDR` /
+    `TestAddAddress_DifferentCIDR_ReturnsAlreadyAssigned` /
+    `TestAddAddress_KernelRejectsSameCIDR` /
+    `TestAddAddress_KernelRejectsDifferentCIDR` /
+    `TestAddAddress_InvalidCIDR` (table-driven, 6 sub-cases) /
+    `TestAddAddress_ExecFailureNonFileExists` /
+    `TestAddAddress_BareHostCIDR_Rejected`.
+
+  Two failures surfaced and were fixed before commit (per loop
+  rule "build red → roll back"):
+  - `TestAddAddress_ExecFailureNonFileExists`: production code
+    initially probed unconditionally on ANY exec failure; a
+    permission / No-such-device error wasted an exec call AND
+    could report the wrong reason. Tightened the gate to probe
+    ONLY on "File exists" — matches the kernel's actual signal
+    for "address conflict".
+  - `TestAddAddress_Canonicalisation`: the first cut of the
+    impl tried to canonicalise bare-host CIDRs (`"10.66.0.2"`)
+    to `/32` by counting bits in `net.IPNet.Mask`. The test
+    covered it, but `net.ParseCIDR("10.66.0.2")` actually
+    rejects bare hosts — the canonicalisation feature was
+    untested. Per "KISS — don't add complexity you don't need
+    yet" (ARCH §14), dropped the feature entirely. The
+    runtime always knows its prefix length from the IPAM lease;
+    bare-host CIDRs are not part of the contract, and a typo
+    that drops the slash must NOT reach the kernel. Replaced
+    the test with `TestAddAddress_BareHostCIDR_Rejected`,
+    asserting the input is rejected with `ReasonCIDRInvalid`
+    without any exec call.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓,
+  `go test ./... -race -count=1 -shuffle=on` ✓.
+
 - **Client (Ubuntu/Debian) / Bring interface up — abstract `Link`
   contract** — shipped.
   `internal/contract/route/link.go` defines the seam: `Link`
