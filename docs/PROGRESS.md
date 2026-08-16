@@ -6,6 +6,72 @@ and a one-line note on the approach taken.
 
 ## 2026-08-16
 
+- **Client (Ubuntu/Debian) / Read IP packets from TUN, hand off to
+  gRPC stream — choose the mechanism** — ADR 0005 accepted.
+  Closes the first sub-item of the data-path parent item;
+  resolves the goroutine shape, error taxonomy, and buffer
+  policy for the pump that bridges `contracttun.Device` and
+  `transport.Tunnel`.
+
+  **Decision (TL;DR):** two goroutines in an
+  `errgroup.WithContext`, direct read→SendFrame / RecvFrame→Write
+  loops (no channel between directions), per-Pump `sync.Pool`
+  of MTU-sized read buffers, single-byte IP-version dispatch
+  (`0x4*` → TagIPv4, `0x6*` → TagIPv6, anything else fails
+  closed).
+
+  **Rationale (key points):**
+  - `golang.org/x/sync/errgroup` is the only new dependency and
+    is already transitive via `golang.org/x/sys`. The pump does
+    not introduce any *new* third-party surface; `golang.org/x/sync`
+    moves from `// indirect` to direct in `go.mod` once the pump
+    imports it.
+  - **No channel between the two directions.** Each direction is
+    1:1 with a blocking peer (kernel read / gRPC flow control),
+    and a channel would add per-packet allocation + a
+    single-point-of-failure queue without decoupling anything.
+  - **Per-Pump `sync.Pool`, not global.** Two concurrent sessions
+    must not share buffers; per-P keeps `sync.Pool`'s per-P
+    stealing from helping an unrelated session and keeps the
+    accounting simple.
+  - **Error taxonomy:** `contracttun.ErrClosed`,
+    `transport.ErrClosed`, and `io.EOF` from `RecvFrame` map to
+    `nil` (graceful shutdown). Any other error is wrapped with
+    `fmt.Errorf("pump: %s: %w", ...)` and returned; `errgroup`'s
+    ctx cancellation unblocks the partner, which returns its
+    OWN error (or `nil` if it was already shutting down); the
+    orchestrator returns `g.Wait()` so the operator sees the
+    root cause, not the `context.Canceled` consequence.
+  - **Tag dispatch is one byte** (`buf[0] >> 4 == 4` /
+    `== 6`). The IP version nibble is always at offset 0 by
+    the time the packet reaches the TUN reader; the check is
+    O(1) and any non-4/6 nibble fails closed (kernel bug or
+    TUN fd was written by someone other than the kernel,
+    either way not our peer).
+
+  **What we lose:** no batching of multiple TUN packets into
+  one `Frame` (gRPC + HTTP/2 already coalesce); no fast-path
+  XDP/TC redirect (separate additive TODO item); no read-side
+  zero-copy / `AF_XDP` / `io_uring` (revisit only when
+  profiling shows the userspace read is the bottleneck, which
+  it almost certainly will not be at 1 Gbps).
+
+  **Alternatives rejected:** two separate contract methods
+  (`PumpUp`/`PumpDown`) — invites half-alive pumps; single
+  goroutine with `select` — couples two unrelated blocking
+  patterns; `chan []byte` between directions — adds cost
+  without benefit; global buffer pool — two sessions would
+  fight over buffers; manual `sync.WaitGroup + chan error` —
+  re-implements errgroup poorly; no buffer pool — wastes GC
+  at line-rate.
+
+  **Sub-items filed by this ADR (one per future iter):**
+  contract interface (moq), concrete impl, non-Linux stub,
+  contract tests via moq, integration test.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓, `go test ./...
+  -race -count=1 -shuffle=on` ✓ (no code change this iter).
+
 - **Client (Ubuntu/Debian) / Bring interface up — moq-generated
   contract tests for the `Link` interface** — shipped.
   Closed the last open sub-item of the "Bring interface up" group.
