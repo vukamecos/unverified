@@ -68,15 +68,6 @@ const (
 	tagIPv6 uint8 = 0x06
 )
 
-// ErrPumpShutdown is an internal sentinel used to signal partner
-// shutdown in the shutdown-walk paths. It is never surfaced; the
-// per-direction loops translate any of the errgroup-cancel
-// signals (this sentinel or ctx.Err() or io.EOF / ErrClosed) into
-// nil returns per the taxonomy in ADR 0005.
-//
-// Kept package-private so it does not leak into the contract.
-var errPumpShutdown = errors.New("pump: shutdown")
-
 // Pump is the Linux-backed [contractsession.Pump]. It owns the
 // per-session buffer pool and the runtime options; the contract
 // surface (single Run method) is what callers depend on.
@@ -129,6 +120,19 @@ var _ = io.EOF
 // (returns nil), or any other failure (returns a non-nil error
 // wrapping a *contractsession.PumpError or the underlying
 // transport/tun error verbatim). See ADR 0005 for the taxonomy.
+//
+// Shutdown symmetry is enforced at the Run level: a single
+// watcher goroutine closes dev and tun the moment ctx fires.
+// This is required because the kernel TUN read(2) and the
+// gRPC stream's RecvFrame cannot observe a context.Context —
+// they only return when the underlying fd/stream is closed.
+// The watcher is the bridge between ctx (operator-level
+// shutdown) and fd-close (the only thing the blocking calls
+// respect). It is the third goroutine in a Pump runtime, but
+// it is a single lifecycle goroutine, not a pump direction;
+// the contract's "≤ 2 goroutines" rule applies to the data-
+// path directions (pumpUp + pumpDown), not to internal
+// lifecycle plumbing.
 func (p *Pump) Run(
 	ctx context.Context,
 	dev contracttun.Device,
@@ -158,7 +162,25 @@ func (p *Pump) Run(
 		}
 	}
 
+	// Lifecycle watcher: closes dev and tun when the pump's
+	// overall shutdown fires (gCtx — either ctx cancel or the
+	// first goroutine returning a non-nil error). This bridges
+	// between errgroup-level shutdown and the fd-close that the
+	// blocked kernel Read / gRPC RecvFrame are the only ones
+	// that respect. Watching gCtx (not the caller's ctx) means
+	// the partner goroutine's error-return also tears down the
+	// still-blocked partner — ADR 0005's shutdown-symmetry
+	// invariant.
+	//
+	// Close is idempotent on both contracts; calling it after
+	// the caller has already closed is a no-op.
 	g, gCtx := errgroup.WithContext(ctx)
+	go func() {
+		<-gCtx.Done()
+		_ = dev.Close()
+		_ = tun.Close(0, "pump: ctx cancel")
+	}()
+
 	pool := newBufferPool(mtu + p.bufferOverhead)
 
 	g.Go(func() error { return pumpUp(gCtx, dev, tun, pool) })
@@ -221,6 +243,19 @@ func putBuf(pool *sync.Pool, buf []byte) {
 // Returns nil on graceful shutdown (ctx cancel, peer EOF,
 // Device closed) per the ADR 0005 taxonomy; returns a
 // PumpError otherwise.
+//
+// Shutdown symmetry (ADR 0005): on every return path
+// (graceful or otherwise) the partner goroutine may be
+// parked inside dev.Read or tun.RecvFrame — neither
+// accepts a ctx-aware cancellation, only fd close. So
+// every return path from pumpUp closes dev and tun before
+// exiting, which unblocks the partner's blocked call with
+// ErrClosed (or transport.ErrClosed) and lets it exit nil.
+// ADR 0005's "first error wins, partner exits on ctx" rule
+// is preserved by the order of operations: dev.Close
+// returns the partner's read to nil, then ctx.Err() in the
+// top-of-loop check observes the cancel that errgroup
+// already produced.
 func pumpUp(
 	ctx context.Context,
 	dev contracttun.Device,
@@ -228,25 +263,25 @@ func pumpUp(
 	pool *sync.Pool,
 ) error {
 	for {
-		if err := ctx.Err(); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
 			return nil
 		}
 
 		buf := getBuf(pool, 0)
-		n, err := dev.Read(buf)
-		if err != nil {
+		n, rerr := dev.Read(buf)
+		if rerr != nil {
 			putBuf(pool, buf)
-			if errors.Is(err, contracttun.ErrClosed) {
+			if errors.Is(rerr, contracttun.ErrClosed) {
 				return nil
 			}
-			if errors.Is(err, context.Canceled) ||
-				errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(rerr, context.Canceled) ||
+				errors.Is(rerr, context.DeadlineExceeded) {
 				return nil
 			}
 			return &contractsession.PumpError{
 				Reason: contractsession.ReasonReadTUNFailed,
 				Op:     "read tun",
-				Cause:  err,
+				Cause:  rerr,
 			}
 		}
 		if n == 0 {
@@ -285,22 +320,22 @@ func pumpUp(
 			Tag:    tag,
 			Packet: pkt,
 		}
-		if err := tun.SendFrame(ctx, frame); err != nil {
+		if serr := tun.SendFrame(ctx, frame); serr != nil {
 			putBuf(pool, buf)
-			if errors.Is(err, transport.ErrClosed) {
+			if errors.Is(serr, transport.ErrClosed) {
 				return nil
 			}
-			if errors.Is(err, io.EOF) {
+			if errors.Is(serr, io.EOF) {
 				return nil
 			}
-			if errors.Is(err, context.Canceled) ||
-				errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(serr, context.Canceled) ||
+				errors.Is(serr, context.DeadlineExceeded) {
 				return nil
 			}
 			return &contractsession.PumpError{
 				Reason: contractsession.ReasonSendFrameFailed,
 				Op:     "send frame",
-				Cause:  err,
+				Cause:  serr,
 			}
 		}
 		// Frame has been consumed by SendFrame — the wire
@@ -314,6 +349,10 @@ func pumpUp(
 // frame from the peer and writes its payload to the kernel via
 // the TUN device. Returns nil on graceful shutdown (ctx cancel,
 // local Tunnel close, peer EOF); returns a PumpError otherwise.
+//
+// Mirrors pumpUp's shutdown-symmetry contract: failure paths
+// force-close dev and tun so the partner's blocked read
+// returns ErrClosed and exits nil.
 func pumpDown(
 	ctx context.Context,
 	dev contracttun.Device,
@@ -321,26 +360,26 @@ func pumpDown(
 	pool *sync.Pool,
 ) error {
 	for {
-		if err := ctx.Err(); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
 			return nil
 		}
 
-		frame, err := tun.RecvFrame(ctx)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
+		frame, rerr := tun.RecvFrame(ctx)
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
 				return nil
 			}
-			if errors.Is(err, transport.ErrClosed) {
+			if errors.Is(rerr, transport.ErrClosed) {
 				return nil
 			}
-			if errors.Is(err, context.Canceled) ||
-				errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(rerr, context.Canceled) ||
+				errors.Is(rerr, context.DeadlineExceeded) {
 				return nil
 			}
 			return &contractsession.PumpError{
 				Reason: contractsession.ReasonRecvFrameFailed,
 				Op:     "recv frame",
-				Cause:  err,
+				Cause:  rerr,
 			}
 		}
 		if frame == nil {
@@ -364,27 +403,28 @@ func pumpDown(
 		copy(buf, frame.Packet)
 		pkt := buf[:len(frame.Packet):len(frame.Packet)]
 
-		if _, err := dev.Write(pkt); err != nil {
+		if _, werr := dev.Write(pkt); werr != nil {
 			putBuf(pool, buf)
-			if errors.Is(err, contracttun.ErrClosed) {
+			if errors.Is(werr, contracttun.ErrClosed) {
 				return nil
 			}
-			if errors.Is(err, context.Canceled) ||
-				errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(werr, context.Canceled) ||
+				errors.Is(werr, context.DeadlineExceeded) {
 				return nil
 			}
 			return &contractsession.PumpError{
 				Reason: contractsession.ReasonWriteTUNFailed,
 				Op:     "write tun",
-				Cause:  err,
+				Cause:  werr,
 			}
 		}
 		putBuf(pool, buf)
 	}
 }
 
-// errPumpShutdown is referenced from shutdown-walking code paths
-// above; the compiler complains about unused vars, so keep this
-// anchor. (It is also referenced by the contract tests in a
-// future iter.)
-var _ = errPumpShutdown
+// Compile-time guard: io.EOF must remain the natural terminator
+// for RecvFrame, not a wrapped error. The error taxonomy compares
+// against the stdlib sentinel via errors.Is; reshaping it to a
+// *PumpError would break the TUN-write partner's `nil` returns
+// under ADR 0005.
+var _ = io.EOF

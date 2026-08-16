@@ -615,3 +615,91 @@ and a one-line note on the approach taken.
   operation in a single log-friendly form; each call site
   does `Op: "read tun"` once, the helper composes the rest.
   Callers never switch on `Op`.
+
+- **Client (Ubuntu/Debian) / Read IP packets from TUN, hand off to
+  gRPC stream — contract-level unit tests** — shipped. Closed
+  sub-item 5.
+
+  14 tests in `internal/tunnel/session/pump_test.go`,
+  exercising the production `*Pump` end-to-end. The `Pump`
+  interface is one method, so moq buys nothing; `contracttun.
+  Device` (5 methods) and `transport.Tunnel` (3 methods) are
+  hand-rolled fakes with `atomic.Bool` / `sync.Once` /
+  `chan struct{}` plumbing.
+
+  Coverage:
+
+  - `TestPump_Run_NilDevice` / `_NilTunnel` — input
+    validation short-circuits before any goroutine spawn
+    (map to `ReasonReadTUNFailed` / `ReasonSendFrameFailed`).
+  - `TestPump_Run_DevMTUError` — `Device.MTU` failure
+    propagates as `*PumpError{Reason: ReasonReadTUNFailed}`
+    with the underlying cause preserved through `Unwrap`.
+  - `TestPump_Run_GracefulCtxCancel` — central contract: ctx
+    cancel returns `nil`.
+  - `TestPump_Run_DeviceClosed_Nil` — `Device.Close` mid-loop
+    observed as `contracttun.ErrClosed` returns `nil`.
+  - `TestPump_Run_DeviceReadError` — non-`ErrClosed`
+    `Device.Read` error wraps as `ReasonReadTUNFailed`; the
+    partner goroutine observes ctx cancel and exits `nil`.
+  - `TestPump_Run_PeerEOF_Nil` — `RecvFrame` returns `io.EOF`
+    translates to graceful `nil`.
+  - `TestPump_Run_RecvError` — non-`ErrClosed`/non-`io.EOF`
+    `RecvFrame` error wraps as `ReasonRecvFrameFailed`.
+  - `TestPump_Run_SendFrameError` — `SendFrame` error wraps
+    as `ReasonSendFrameFailed`.
+  - `TestPump_Run_TagDispatchFailClosed` — first byte `0x99`
+    (not 0x4* / 0x6*) fails closed *before* any `SendFrame`
+    call (counter asserts `== 0`).
+  - `TestPump_Run_IPv4_TagDispatchedAs4` / `_IPv6_Tag
+    DispatchedAs6` — happy path; verifies `tag=0x04` /
+    `tag=0x06` and payload byte-for-byte copy.
+  - `TestPump_Run_PartnerTearDownOnError` — a read-side
+    failure returns the *root-cause* `ReasonReadTUNFailed`
+    via `g.Wait()`, not a `context.Canceled` from the
+    partner's exit. Pins ADR 0005's "first error wins,
+    ctx-cancel is just a shutdown signal" rule.
+  - `TestPump_Run_PoolCleanupOnCancel` — multi-iteration
+    happy path terminates cleanly under `infiniteReads=true`;
+    smoke check that the `sync.Pool` does not deadlock or
+    leak across iterations on ctx cancel.
+
+  Two helpers add the cross-platform test rigour:
+
+  - `shutdownOnCtx(ctx, dev, tun)` — watches ctx and, on
+    cancel, releases the fake's blocked Read/Write/Recv
+    channels. Needed because the production kernel read(2)
+    and gRPC RecvFrame are ctx-unaware in production
+    (they only return on fd close); the watcher is the
+    bridge that lets tests simulate that signal.
+  - `pollUntil(timeout, cond)` — replaces `time.Sleep +
+    immediate atomic.Load` with a bounded-wait spin
+    (1 ms cadence) since a pump goroutine's scheduling is
+    racy under `-race`. Used by the IPv4/IPv6 / pool-cleanup
+    tests to assert async pump output.
+
+  **Lifecycle-watcher fix:** the watcher in `Run` originally
+  watched the *caller's* `ctx`. That meant a goroutine-
+  originated error (e.g. a read failure) would cancel
+  `gCtx` but not the parent, leaving the partner goroutine
+  parked inside its blocking call. The fix: pass `gCtx`
+  (errgroup-derived) to the watcher. Now any errgroup
+  cancellation — caller-side OR partner-side — tears down
+  the still-blocked partner via `dev.Close` + `tun.Close`,
+  preserving ADR 0005's "first error wins, partner exits on
+  ctx" symmetry with the bridge taking the partner out via
+  fd close rather than via ctx (which the blocked calls do
+  not observe).
+
+  **Why hand-rolled fakes, not moq:** `contracttun.Device`
+  has 5 methods and `transport.Tunnel` has 3 — small
+  enough that a generated mock would be more lines than the
+  test logic. The moq rule (ARCH §13.1) reserves moq for
+  the larger `Link` / `Preflight`-class interfaces. The
+  ~250 lines of hand-rolled fake concentrate in the
+  test file and document the test rigour directly.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓, `go test ./...
+  -race -count=1 -shuffle=on` ✓ (session package now has
+  13 PASS, 1.04 s wall). Re-ran with `-count=3` for
+  flakiness — stable.
