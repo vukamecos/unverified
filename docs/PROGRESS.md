@@ -1238,3 +1238,52 @@ and a one-line note on the approach taken.
 
   Gate: pure doc-only change — `go build ./...` ✓,
   `go vet ./...` ✓, no code change.
+
+- **Scriptable CO-RE compile probe (TODO row 10b)** —
+  shipped. Closed the verification sub-row.
+
+  New package `internal/hostprobe` with two files:
+
+  - `bpfcompile.go` — exposes
+    `COReProbe() (*ProbeResult, error)` that runs the
+    end-to-end scriptable check: writes a minimal eBPF
+    C source to a temp file, runs
+    `clang -target bpf -c -I /usr/include -o <obj>`
+    with absolute argv (per ADR 0004 / 0006), then
+    `llvm-objdump -h <obj>` and asserts a `.BTF`
+    section line is present. Returns a typed
+    `*ClangNotFoundError` carrying the operator-action
+    hint to TODO row 10a (`sudo apt install clang
+    libbpf-dev llvm`) when clang or llvm-objdump is
+    missing. Stdlib only (`os`, `os/exec`, `bytes`,
+    `errors`, `fmt`, `strings`); no new third-party
+    dependency; no `sh -c`.
+
+  - `bpfcompile_test.go` — two tests:
+    `TestCOReProbe_HostToolchain` runs the probe and
+    `t.Skip`s on `*ClangNotFoundError` so the gate
+    stays green while the host lacks the toolchain;
+    `TestClangNotFoundError_Message` pins the typed
+    error's `Error()` / `Unwrap()` contract (the
+    `Unwrap()` must surface the underlying
+    `exec.LookPath` error so callers can `errors.Is`
+    against `exec.ErrNotFound`).
+
+  **On this host:** the probe SKIPs (clang missing, as
+  expected pre-10a) and the typed-error unit test
+  PASSes. When the operator lands 10a, the probe will
+  run end-to-end without any code change.
+
+  Architecture decision: `internal/hostprobe` is a
+  host-capability verifier, not a contract. The
+  production binary never imports it; tests under
+  `internal/hostprobe` are the only callers. This keeps
+  the package boundary clean — it does not pollute
+  `internal/contract` (which holds interfaces only per
+  ARCH §5) and it does not add eBPF build artifacts to
+  the production path.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓,
+  `go test ./... -race -count=1 -shuffle=on` ✓
+  (hostprobe: 1 PASS, 1 SKIP). Stable across
+  `-count=3`.
