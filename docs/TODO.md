@@ -25,7 +25,7 @@ Target platform: **Ubuntu / Debian (Linux)**.
 - [x] Define the `.proto` schema for tunnel messages (packet framing, control channel)
 - [x] Decide on packet encoding (raw IPv4/IPv6 vs. TLV) — see [docs/decisions/0001-packet-encoding.md](decisions/0001-packet-encoding.md). Raw IPv4/IPv6 framing (tag byte + 2-byte length + packet). No TLV.
 - [x] Decide on stream multiplexing (one stream per session vs. per connection) — see [docs/decisions/0002-stream-multiplexing.md](decisions/0002-stream-multiplexing.md). One gRPC bidi stream per Tunnel session. No inner sub-multiplex.
-- [ ] Document handshake / authentication flow
+- [x] Document handshake / authentication flow — see [docs/handshake.md](handshake.md). Five phases: TCP → TLS 1.3 mTLS (hybrid KEM, hybrid cert chain via InsecureSkipVerify+VerifyPeerCertificate per ARCH §7.2) → gRPC stream open → inner KEM + transcript signature (ML-DSA-65 over canonicalised transcript, domain-separated `"unvfd/v1/inner-kem-transcript"`) → AEAD key derivation (HKDF-SHA-512, per-direction info strings).
 
 ## Client (Ubuntu/Debian)
 

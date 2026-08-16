@@ -6,6 +6,17 @@ and a one-line note on the approach taken.
 
 ## 2026-08-15
 
+- **Protocol / Document handshake / authentication flow** — committed.
+  Added `docs/handshake.md`, the single source of truth for the order
+  of operations that brings a client and server from TCP open to a
+  Tunnel ready for IP packets. Five phases: TCP → TLS 1.3 mTLS (hybrid
+  KEM, hybrid cert chain via `InsecureSkipVerify`+`VerifyPeerCertificate`
+  per ARCH §7.2) → gRPC stream open → inner KEM + transcript signature
+  (ML-DSA-65 over canonicalised transcript, domain-separated
+  `"unvfd/v1/inner-kem-transcript"`) → AEAD key derivation (HKDF-SHA-512,
+  per-direction info strings). Each phase's preconditions, what it
+  proves, and what it does NOT cover are documented. No code changes;
+  build/vet/test/-race still green.
 - **Protocol / Decide on stream multiplexing** — ADR 0002 accepted.
   One gRPC bidi stream per authenticated Tunnel session; the Tunnel
   abstraction IS the gRPC stream. No nested sub-multiplex. Rationale:
