@@ -24,7 +24,7 @@ Target platform: **Ubuntu / Debian (Linux)**.
 
 - [x] Define the `.proto` schema for tunnel messages (packet framing, control channel)
 - [x] Decide on packet encoding (raw IPv4/IPv6 vs. TLV) — see [docs/decisions/0001-packet-encoding.md](decisions/0001-packet-encoding.md). Raw IPv4/IPv6 framing (tag byte + 2-byte length + packet). No TLV.
-- [ ] Decide on stream multiplexing (one stream per session vs. per connection)
+- [x] Decide on stream multiplexing (one stream per session vs. per connection) — see [docs/decisions/0002-stream-multiplexing.md](decisions/0002-stream-multiplexing.md). One gRPC bidi stream per Tunnel session. No inner sub-multiplex.
 - [ ] Document handshake / authentication flow
 
 ## Client (Ubuntu/Debian)

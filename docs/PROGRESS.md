@@ -6,6 +6,16 @@ and a one-line note on the approach taken.
 
 ## 2026-08-15
 
+- **Protocol / Decide on stream multiplexing** — ADR 0002 accepted.
+  One gRPC bidi stream per authenticated Tunnel session; the Tunnel
+  abstraction IS the gRPC stream. No nested sub-multiplex. Rationale:
+  1:1 identity binding (Tunnel = inner-KEM session = AEAD epoch = nonce
+  space); HTTP/2 already multiplexes streams on one TCP connection, so
+  per-inner-flow streams are pure overhead; conntrack keying is by the
+  5-tuple inside the tunneled packet, independent of stream identity.
+  Alternatives (per-flow streams, separate handshake stream, separate
+  control stream) all explicitly rejected. No code changes; Tunnel
+  interface and codec already implement this. build/vet/test still green.
 - **Protocol / Decide on packet encoding** — ADR 0001 accepted.
   Raw IPv4/IPv6 framing (single tag byte `0x04`/`0x06`, 2-byte BE length,
   packet bytes verbatim) — already implemented in the codec shipped in
