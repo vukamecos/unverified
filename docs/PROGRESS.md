@@ -859,3 +859,29 @@ and a one-line note on the approach taken.
 
   Gate: pure host-tooling availability — `go build ./...`
   ✓, `go vet ./...` ✓, no code change.
+
+- **Go gRPC plugins (`protoc-gen-go`,
+  `protoc-gen-go-grpc`) — installed out-of-project** —
+  shipped. Closed the third Dependencies sub-item.
+
+  Installed via `go install ...@latest` with
+  `GOPATH=/tmp/gopath GOBIN=/tmp/gobin` so neither the
+  binaries nor their dependencies land in this module's
+  `go.mod` (the plugins' transitive modules are
+  google.golang.org/protobuf v1.36.12 and
+  google.golang.org/grpc v1.83.0). The row's normal
+  Debian-package alternative (`protoc-gen-go-grpc` on
+  bookworm+) was not used because the host is Linux Mint
+  and apt would require sudo, and the user-local
+  install is sufficient for the "available for
+  regeneration" use-case.
+
+  Crucially, the plugins are **not** a build dep of the
+  project: the tunnelpb codec is hand-rolled (the
+  intentional design recorded in the sub-package) and
+  the build is green without either binary on `PATH`.
+  They are tooling for an operator who decides to
+  regenerate from `.proto` later.
+
+  Gate: pure host-tooling availability — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.
