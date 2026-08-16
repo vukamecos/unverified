@@ -18,11 +18,11 @@ Target platform: **Ubuntu / Debian (Linux)**.
 - [ ] `libbpf-dev`, `clang`, `llvm` (for compiling eBPF programs)
 - [ ] CAP_BPF, CAP_PERFMON, CAP_NET_ADMIN (required to load eBPF programs)
 - [ ] QUIC: `github.com/quic-go/quic-go` — no system package needed (pure Go), but kernel UDP buffer tuning (`sysctl net.core.rmem_max`). (There is no `libpquic` Go binding in current use; do not pull in anything that name-resolves to a non-existent project.)
-- [ ] PQC library: Go stdlib (`crypto/mlkem` for ML-KEM-768/1024, `crypto/tls` hybrid X25519+MLKEM768 enabled by default on Go 1.24+) for KEM; `github.com/cloudflare/circl` (pure Go, audited) for ML-DSA-65 (Dilithium), which is not in stdlib as of Go 1.26.
+- [ ] PQC library: Go stdlib — `crypto/mlkem` for ML-KEM-768/1024, `crypto/tls` hybrid X25519+MLKEM768 enabled by default on Go 1.24+, **and `crypto/mldsa` (FIPS 204) for ML-DSA-65, available since Go 1.26.0**. The signature path therefore does **not** depend on `github.com/cloudflare/circl`; circl is no longer required for ML-DSA and we keep it out of the dependency surface. (`crypto/x509` and `crypto/tls` integration of ML-DSA — needed for the stdlib TLS path to negotiate a hybrid signature — is still tracked as a proposal at golang/go#78888, and the binary's own hybrid-cert validator in `internal/contract/pki/hybrid` is what bridges that gap; see ARCH §7.2.)
 
 ## Protocol
 
-- [ ] Define the `.proto` schema for tunnel messages (packet framing, control channel)
+- [x] Define the `.proto` schema for tunnel messages (packet framing, control channel)
 - [ ] Decide on packet encoding (raw IPv4/IPv6 vs. TLV)
 - [ ] Decide on stream multiplexing (one stream per session vs. per connection)
 - [ ] Document handshake / authentication flow
@@ -264,6 +264,13 @@ log all
 - [ ] `unvfd status` — show running sessions, TUN state, kill-switch state
 - [ ] `unvfd logs` — tail structured logs (journald or file)
 - [ ] `unvfd self-test` — verify nftables/eBPF/TUN/cert chain before going live
+- [ ] `unvfd fw disable --confirm` — remove the client-side kill switch. **The only sanctioned way** to take the kill switch down. Records the operator's identity and timestamp in the audit log *before* removing the rules; refuses to run without `--confirm`. (See ARCH §8.1.1.)
+- [ ] `unvfd audit verify <log>` — re-walk an audit log, re-verify every signature using the public audit key passed in (`--audit-pubkey <path>`), print the first inconsistency if any, exit non-zero on failure. (See ARCH §11.1.)
+- [ ] `unvfd lint logs` — static check that scans the source tree for logger calls passing forbidden field types (payload bytes, destination IP/port, DNS query names, raw session keys). Runs in CI; rejects a PR that adds a leaky call site. (See ARCH §11.1.)
+
+### Audit signer (separate process)
+
+- [ ] `unvfd-audit-signer` — small standalone binary in `cmd/unvfd-audit-signer/`. Holds the audit signing key (file on disk, mode `0600`, user `_unvfd-signer`; or PKCS#11 if HSM available). Listens on `/run/unvfd/audit-signer.sock`, peer-credentials-checked. No network, no TUN, no BPF, no nftables; `CapabilityBoundingSet=` is empty. Supervised by its own `unvfd-audit-signer.service` with `Restart=on-failure`. (See ARCH §11.1.)
 
 ### PKI storage & backend
 

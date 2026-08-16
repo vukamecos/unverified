@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+// Wire format for the VPN tunnel. The .pb.go for this file is generated
+// from this source by hand (see internal/transport/grpc/tunnelpb/codec.go).
+// The proto definition is the source of truth for the on-wire layout;
+// the codec file must mirror it. When changing a field number, add a new
+// field with a new tag — never renumber or repurpose an existing one.
+//
+// Decision: raw IPv4/IPv6 packets are framed with a single byte address
+// family discriminator (4 or 6), followed by the packet bytes. This
+// avoids TLV overhead for the hot path; control messages are full
+// proto3 messages tagged with a non-4/6 family byte (0x10/0x11/...).
+//
+// One bidi gRPC stream per session, multiplexed by the first byte:
+//   0x04         : IPv4 packet (len = next 2 bytes BE, then packet)
+//   0x06         : IPv6 packet (len = next 2 bytes BE, then packet)
+//   0x10         : ControlHello
+//   0x11         : ControlSession
+//   0x12         : ControlKeepalive
+//   0x13         : ControlRekey
+//   0x14         : ControlClose
+//
+// 0x00 / 0xFF and any unknown byte are framing errors (closed stream).
+
+package tunnel.v1;
+
+option go_package = "github.com/vukamecos/unverified/internal/transport/grpc/tunnelpb";
+
+message ControlHello {
+  // Protocol version this client speaks.
+  uint32 protocol_version = 1;
+  // Client identifier (CN of the client cert). Server uses this for
+  // ACL lookup. Length-prefixed string, max 255 bytes.
+  string client_id = 2;
+  // Requested inner-AEAD cipher suite. 0 = AES-256-GCM, 1 = ChaCha20-Poly1305.
+  uint32 cipher_suite = 3;
+}
+
+message ControlSession {
+  // Server-assigned virtual IP (IPv4, network byte order, 4 bytes).
+  bytes assigned_ipv4 = 1;
+  // Server-assigned virtual IPv6 (16 bytes, network byte order).
+  bytes assigned_ipv6 = 2;
+  // DNS server addresses (length-prefixed, max 4 entries).
+  repeated bytes dns_servers = 3;
+  // MTU for the tunnel, in bytes.
+  uint32 mtu = 4;
+}
+
+message ControlKeepalive {
+  // Monotonic counter, server replies with the same value.
+  uint64 nonce = 1;
+}
+
+message ControlRekey {
+  // New inner-KEM public key (X25519, 32 bytes) + ML-KEM-768 (1184 bytes)
+  // concatenated. The peer completes the inner KEM and rekeys.
+  bytes x25519_public = 1;
+  bytes mlkem_public = 2;
+  // Sequence number at which the new key activates.
+  uint64 activate_at_seq = 3;
+}
+
+message ControlClose {
+  // Reason code (numeric; documented in ARCH §4.1).
+  uint32 code = 1;
+  // Human-readable diagnostic. Length-prefixed, max 255 bytes. Optional.
+  string message = 2;
+}

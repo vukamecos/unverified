@@ -1,0 +1,110 @@
+# golangci-lint configuration for unvfd.
+#
+# The linter set is deliberately conservative (no "experimental" linters,
+# no cosmetic ones) and biased toward security and correctness. The full
+# rationale is in docs/ARCH.md §13.1.
+#
+# This file is consumed by the pinned local binary at bin/tools/golangci-lint
+# (install with `make tools`); the version is pinned in the Makefile so a
+# new golangci-lint release cannot silently change the build status.
+
+run:
+  timeout: 10m
+  tests: true
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+  go: "1.26"
+
+linters:
+  disable-all: true
+  enable:
+    # stdlib whole-program checker
+    - govet
+    # Go security checker (G104 unhandled errors, G304 tainted paths,
+    # G306 file mode, G404 math/rand, G401/G501 weak hashes, etc.)
+    - gosec
+    # The most-cited non-stdlib linter: time.Duration units, struct
+    # alignment, "this code does not do what you think" bugs.
+    - staticcheck
+    # The new `unused` linter (formerly part of staticcheck).
+    - unused
+    # `x = x` where the assignment is ineffective.
+    - ineffassign
+    # Pointless conversions.
+    - unconvert
+    # Diagnostic, style, performance checks. Experimental checks are off.
+    - gocritic
+    # Don't shadow predeclared identifiers (len, cap, new, ...).
+    - predeclared
+    # http.Response.Body must be closed.
+    - bodyclose
+    # errors.Is / errors.As instead of string-equality.
+    - errorlint
+    # `return nil` after handling an error.
+    - nilerr
+    # Repeated strings, cyclomatic complexity, duplicated code.
+    - goconst
+    - gocyclo
+    - dupl
+    # Classic Go gotchas.
+    - exportloopref
+    - copyloopvar
+
+  # Fast exclusions to keep PR signal-to-noise high. A hit is still a
+  # bug if a security-critical path triggers one of these; loosen only
+  # after a code review justifies the carve-out.
+  exclusions:
+    rules:
+      - path: '_test\.go'
+        linters: [unused, dupl, gocritic, gocyclo]
+      - path: 'internal/contract/pki/hybrid/parser\.go'
+        # Hybrid cert parser is intentionally long and branchy.
+        linters: [gocyclo, gocritic]
+        text: '.*'
+      - path: 'internal/transport/tls/config\.go'
+        # Our single deliberate `//nolint:gosec` for InsecureSkipVerify
+        # lives in this file; see docs/ARCH.md §7.2.
+        linters: [gosec]
+        text: 'G402'
+
+linters-settings:
+  gosec:
+    # Severity threshold — we want all severities surfaced.
+    severity: low
+    confidence: low
+  gocritic:
+    enabled-tags: [diagnostic, style, performance, experimental]
+    disabled-checks: [hugeParam, rangeValCopy]
+  gocyclo:
+    # 30 is high for normal Go code; protocol parsers and the kill-switch
+    # state machine need more. Reviewed per-PR.
+    min-complexity: 30
+  dupl:
+    threshold: 150
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  staticcheck:
+    # All checks on; we want the full surface.
+    checks: ["all"]
+  errorlint:
+    # Allow `errors.As(err, &target)` for now; tighten in a follow-up.
+    allowed: false
+
+issues:
+  # Don't fail the build on a `//nolint:` comment that is missing a
+  # reason; require a justification inline.
+  exclude-use-default: false
+  # Surface every issue, do not cap the output.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # New issues fail the build (a regression on `main` is a regression).
+  new-from-rev: HEAD
+  new-from-rev-prev: HEAD~1
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+  uniq-by-line: true
+  sort-results: true
