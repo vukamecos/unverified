@@ -769,3 +769,47 @@ and a one-line note on the approach taken.
   Gate: `go build ./...` ✓, `go vet ./...` ✓, `go test
   ./internal/tunnel/session/ -race -count=5 -shuffle=on`
   ✓ (15 PASS, ~1.13 s). Stable across `-count=5`.
+
+- **Configure routing (`ip route add ... dev tun0`) —
+  mechanism choice** — shipped. Closed sub-item 1.
+
+  ADR 0006
+  ([`docs/decisions/0006-route-mechanism.md`](decisions/0006-route-mechanism.md))
+  resolves the parent item to **`os/exec` shell-out to
+  `ip route`**, extending ADR 0004's pattern to the
+  route table. Five rationale properties: no new
+  dependency (ARCH §6), `iproute2` already required
+  (TODO §"Dependencies"), no `NETLINK_ROUTE` socket in
+  steady state, every route change is a discrete child
+  process visible to `ps`/`journald`, and the argument
+  structure is two-flag invocations with absolute argv
+  and no `sh -c`.
+
+  What is *new* relative to ADR 0004 is the
+  **sentinel-operation carve-out**: changing the host's
+  default route is system-wide and creates a leak window
+  if it lands before the kill switch (§8.1.1) is up.
+  The install order is now TUNSETIFF (ADR 0003) →
+  link up + AddAddress (ADR 0004) → killswitch service
+  verifies ruleset hash → `ip route add default dev
+  tun0` → pump up (ADR 0005). On shutdown the order
+  reverses; if the runtime cannot restore the prior
+  default gateway (captured at install time and persisted
+  in `/var/lib/unvfd/routes.json`) it **refuses to remove
+  the tunnel route** — blackholing the host is preferable
+  to silently leaking traffic to the wrong default
+  gateway. The Route package itself stays a reusable
+  abstraction (the kill-switch gate lives in the
+  orchestrator, not the package); the typed error is
+  `ReasonRouteAddFailed` with a wrapped "kill switch not
+  verified" cause so callers see exactly which invariant
+  failed.
+
+  Sub-items 2-5 (contract interface, `ip`-backed concrete
+  impl, non-Linux stub, moq-generated contract tests)
+  remain for the next iterations. IPv6 routing
+  (`ip -6 route`) is out of scope for this ADR.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓, `go test
+  ./... -race -count=1 -shuffle=on` ✓ (ADR-only change;
+  no production code touched).
