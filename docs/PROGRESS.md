@@ -1353,3 +1353,23 @@ and a one-line note on the approach taken.
   `go test ./... -race -count=1 -shuffle=on` ✓
   (hostprobe: 4 PASS, 1 SKIP). Stable across
   `-count=3`.
+- **Iter 33 — TODO row 22 (QUIC)**:
+  landed `internal/hostprobe/udpbuf_{linux,other}.go` +
+  `udpbuf_test.go`. `hostprobe.UDPBufRmemMax()` reads
+  `/proc/sys/net/core/rmem_max`, returns a
+  `*UDPBufReport` with `Val` + `MeetsRecommendation`
+  (Val >= 4 MiB per `RecommendedRmemMax`). Read-only,
+  stdlib-only. Non-Linux stub via `//go:build !linux`.
+  Operator write (`sysctl -w net.core.rmem_max=...`)
+  intentionally not done — gated on
+  `CAP_NET_ADMIN` per `loop-operator-gate.md`.
+  `quic-go` is NOT yet a `go.mod` entry — deferred to
+  "Mode B / Mode C" rows. Probe surface ships the
+  verifier; when the operator raises the ceiling on
+  their host the same probe path runs end-to-end with
+  no code change.
+  Gate: `go build ./...` ✓, `go vet ./...` ✓,
+  `go test ./...` ✓ (hostprobe: 6 PASS, 1 SKIP;
+  `TestUDPBufRmemMax` surfaces
+  "net.core.rmem_max = 4194304 bytes (recommended ≥
+  4194304); meetsRecommendation = true").
