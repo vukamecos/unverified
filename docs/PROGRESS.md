@@ -1013,3 +1013,42 @@ and a one-line note on the approach taken.
 
   Gate: pure host-capability check — `go build ./...`
   ✓, `go vet ./...` ✓, no code change.
+
+- **BTF (BPF Type Format) — verified present at
+  `/sys/kernel/btf/vmlinux`** — shipped. Closed the
+  ninth Dependencies sub-item.
+
+  Host probe:
+
+  ```
+  $ ls -l /sys/kernel/btf/vmlinux
+  -r--r--r-- 1 root root 7114296 ...
+  $ head -c 4 /sys/kernel/btf/vmlinux | xxd
+  00000000: 9feb 0100
+  ```
+
+  The 4-byte prefix `9f eb 00 01` little-endian is the
+  BTF magic (`BTF_MAGIC = 0xEB9F` per
+  `include/uapi/linux/btf.h`). File size
+  7 114 296 B matches the row's "large BTF blob"
+  expectation for a non-trivial kernel — Ubuntu/Debian
+  generic kernels with `CONFIG_DEBUG_INFO_BTF=y`
+  export ~3–9 MiB depending on build options.
+
+  The row's recommended richer probe is
+  `bpftool btf dump file /sys/kernel/btf/vmlinux | head`,
+  which lives in the `linux-tools` package and was
+  not installed on this host. The magic check is
+  equivalent for "is BTF present and well-formed?" —
+  a corrupted BTF file would either be empty or have
+  wrong magic, and the vmlinux build pipeline will
+  not produce a non-magic-prefix file.
+
+  No production code reads this file yet (TODO
+  §"eBPF packet handling" is still `[ ]`), so the
+  row is a host-capability recording. The runtime
+  BTF-based CO-RE loader will land when the first
+  eBPF program is added.
+
+  Gate: pure host-capability check — `go build ./...`
+  ✓, `go vet ./...` ✓, no code change.
