@@ -392,6 +392,16 @@ func pumpDown(
 				Cause:  errors.New("pump: nil frame without error"),
 			}
 		}
+		if frame.Close != nil {
+			// Peer initiated a clean Close frame. This is
+			// the gRPC close-control surface; treat it as
+			// a graceful shutdown (the peer's `tunnel.
+			// Close(code, msg)` propagated a Close record
+			// through the codec). Exits nil per ADR 0005's
+			// taxonomy, mirroring io.EOF / transport.
+			// ErrClosed on the same path.
+			return nil
+		}
 		if frame.Packet == nil {
 			// Empty payload is a valid no-op frame on the
 			// wire (keep-alive), but the kernel TUN write

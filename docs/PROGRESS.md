@@ -703,3 +703,69 @@ and a one-line note on the approach taken.
   -race -count=1 -shuffle=on` ✓ (session package now has
   13 PASS, 1.04 s wall). Re-ran with `-count=3` for
   flakiness — stable.
+
+- **Client (Ubuntu/Debian) / Read IP packets from TUN, hand off to
+  gRPC stream — off-platform integration test** — shipped.
+  Closed sub-item 6.
+
+  Two production `*Pump`s plumbed end-to-end through a real
+  framed Tunnel pair: `net.Pipe` (full-duplex, in-memory)
+  shimmed with `eofConn` so reads after Close surface
+  `io.EOF` (matching production gRPC, not
+  `io.ErrClosedPipe`), each half wrapped via
+  `transportgrpc.Wrap` to a `transport.Tunnel`, plus two
+  `bufDevice` fakes (one per side).
+
+  `bufDevice` is queue-backed: Read drains `inQ` and blocks
+  on `readCh`/`closedCh` (mirroring the kernel TUN fd-close
+  signal that the pump's lifecycle watcher uses to unblock
+  the blocked `Read`); Write appends to `outQ` and an
+  optional `writeErr` returns a forced error on the next
+  call (used by the partner-tear-down test). `onClose`
+  callback runs after the device's `closeOnce.Do` and is
+  wired to `_ = c1.Close(); _ = c2.Close()` to simulate the
+  production server closing the bidi stream (the gRPC
+  wrapper's `Close` only writes a Close frame; the
+  underlying stream close is the production equivalent,
+  and the in-memory rig has to reproduce it explicitly).
+
+  Two cases verified:
+
+  - `TestPump_Integration_BidirectionalFlow` — one IPv4
+    packet A→B and one IPv6 packet B→A. Each side's
+    `device.outQ` contains the partner's packet bytes
+    exactly (`bytes.Equal` against the input buffer).
+    ctx cancel returns `nil` on both `Run`s within 2s.
+  - `TestPump_Integration_DeviceWriteErrorTearsDownPartner`
+    — side-A enqueues an IPv4 packet; side-B's `Write` is
+    wired to return ENOSPC. side-B's `pumpDown` wraps
+    the error as `*PumpError{Reason: ReasonWriteTUNFailed,
+    Cause: ENOSPC}`; errgroup cancels side-B's `gCtx`; the
+    watcher closes both net.Pipe ends; side-A's `pumpDown`
+    observes `io.EOF` and exits nil. (Without this, side-A's
+    `pumpUp` would still be parked in `devA.Read` empty
+    queue — the test calls `cancel()` after side-B's error
+    to release side-A's watcher.)
+
+  **Production fix this iter:** `pumpDown` now treats a
+  `*tunnelpb.Frame{Close: …}` as graceful shutdown (returns
+  nil), matching the existing `io.EOF` /
+  `transport.ErrClosed` branches. Without this, a peer
+  closing its tunnel would surface as
+  `ReasonRecvFrameFailed` instead of nil — the gRPC
+  close-control surface is functionally a graceful
+  shutdown per ADR 0005. The fix is one `if frame.Close
+  != nil { return nil }` between the nil-frame check and
+  the empty-payload check.
+
+  **Why `bufDevice` and `eofConn`, not mock generators:**
+  Devices are 5 methods, Tunnels are 3, both small enough
+  that hand-rolling is cheaper than wiring moq (per
+  ARCH §13.1). The `eofConn` shim exists because
+  `net.Conn.Close` returns `io.ErrClosedPipe` on subsequent
+  reads — production gRPC returns `io.EOF` instead, and
+  the pump's contract classifies `io.EOF` as graceful.
+
+  Gate: `go build ./...` ✓, `go vet ./...` ✓, `go test
+  ./internal/tunnel/session/ -race -count=5 -shuffle=on`
+  ✓ (15 PASS, ~1.13 s). Stable across `-count=5`.
