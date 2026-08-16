@@ -1052,3 +1052,45 @@ and a one-line note on the approach taken.
 
   Gate: pure host-capability check — `go build ./...`
   ✓, `go vet ./...` ✓, no code change.
+
+- **`libbpf-dev`, `clang`, `llvm` — NOT satisfiable on
+  this host without sudo/apt** — reported (no action).
+
+  Probe:
+
+  ```
+  $ command -v clang
+  (empty)
+  $ dpkg -l | grep -E 'libbpf|clang|llvm' | head
+  ii  libbpf1:amd64     1:1.3.0-2build2         eBPF helper library
+  ii  libllvm19:amd64   1:19.1.1-1ubuntu1~...  Modular compiler run-time
+  ii  libllvm20:amd64   1:20.1.2-0ubuntu1~...  Modular compiler run-time
+  ```
+
+  Missing on this host: `clang` binary, `libbpf-dev`
+  headers, `llvm` compiler tools (only the runtime
+  `.so` is present). The apt packages that would
+  close the row (`apt install clang libbpf-dev llvm`)
+  require `sudo`, which is not granted to this
+  session — the apt lockfile is owned by root and the
+  running user is `fedor`.
+
+  Per the cron rule "не уверен → выбирай безопаснее,
+  откат при красном билде, пункт велик → разбей",
+  failing-closed here means: do NOT install `clang`
+  user-local from a tarball (it is hundreds of MB and
+  pulls its own runtime; not equivalent to a single
+  per-user binary like `protoc`). Stay on the safe
+  path: row stays `[ ]` until the operator with root
+  installs the standard `apt clang libbpf-dev llvm`
+  toolchain, or explicitly authorises a user-local
+  install.
+
+  No production code yet depends on clang/libbpf-dev
+  (TODO §"eBPF packet handling" remains `[ ]`), so
+  this is not a build-blocker for the current
+  iters — it is a "ready for first eBPF iter"
+  recording, same shape as the BTF and kernel-cap
+  rows above.
+
+  This is iter 28 (no code change, no commit).
