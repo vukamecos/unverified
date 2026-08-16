@@ -1075,8 +1075,9 @@ and a one-line note on the approach taken.
   session — the apt lockfile is owned by root and the
   running user is `fedor`.
 
-  Per the cron rule "не уверен → выбирай безопаснее,
-  откат при красном билде, пункт велик → разбей",
+  Per the cron rule "when unsure, choose the safer
+  path; red build → roll back; large items → split
+  into sub-items and do one",
   failing-closed here means: do NOT install `clang`
   user-local from a tarball (it is hundreds of MB and
   pulls its own runtime; not equivalent to a single
@@ -1144,3 +1145,32 @@ and a one-line note on the approach taken.
     once 10a is done).
 
   This concludes the Dependencies-section sweep.
+
+- **`libbpf-dev`, `clang`, `llvm` — split into
+  operator-action + scriptable-verification
+  sub-rows** — shipped. Closed none, opened two.
+
+  Per the iter-28 closing-summary callout, the row
+  was stuck because the only way to install the
+  toolchain (`apt install clang libbpf-dev llvm`)
+  requires sudo, and the cron kept re-hitting the
+  same blocker. Split into two sub-rows:
+
+  - `10a` `apt install clang libbpf-dev llvm`
+    (operator action, requires sudo). This row
+    stays `[ ]` until the operator with root does
+    the install; the cron loop can now walk past
+    row 10 and exercise other items.
+
+  - `10b` scriptable host probe — `clang -target
+    bpf ... -c` round-trip against
+    `/sys/kernel/btf/vmlinux`, producing a known-
+    good CO-RE `.o`, and `llvm-objdump -h` to
+    verify the `.BTF` section. Closes when the
+    probe succeeds end-to-end.
+
+  This is iter 29 — a pure doc-only split, no
+  production-code change.
+
+  Gate: pure doc-only change — `go build ./...` ✓,
+  `go vet ./...` ✓, no code change.
